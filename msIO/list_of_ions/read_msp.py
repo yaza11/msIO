@@ -119,9 +119,7 @@ def composition_msdial(msdial):
             o[row.ontology.strip()] += 1
 
 
-path_lib = r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
-
-MSDialLib = MSPReader(path_lib)
-
 if __name__ == '__main__':
+    path_lib = r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
+    MSDialLib = MSPReader(path_lib)
     s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
