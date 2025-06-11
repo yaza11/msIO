@@ -1,7 +1,7 @@
 from setuptools import setup, find_packages
 
 setup(
-    name='guaymas',
+    name='msIO',
     version='0.0.1',
     url='',
     author='Yannick Zander',
