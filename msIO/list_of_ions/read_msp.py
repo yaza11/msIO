@@ -86,10 +86,10 @@ class MSPReader(BaseLib):
                         lines, splitter='\t')
                     lines = []
 
-        self.features: pd.DataFrame = pd.DataFrame.from_dict(
+        self.df_features: pd.DataFrame = pd.DataFrame.from_dict(
             entries, orient='index')
-        self.features.loc[:, 'ms_level'] = 2
-        self.features.loc[:, 'rt_seconds'] = self.features.rt_minutes * 60
+        self.df_features.loc[:, 'ms_level'] = 2
+        self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
 
     def get_ms2(
             self,
@@ -110,7 +110,7 @@ class MSPReader(BaseLib):
 
 
 def composition_msdial(msdial):
-    ft = msdial.features
+    ft = msdial.df_features
     o = {k.strip(): 0 for k in ft.ontology.unique()}
     n = set()
     for i, row in tqdm(ft.iterrows(), total=ft.shape[0]):
