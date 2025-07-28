@@ -69,8 +69,8 @@ class ProjectImportManager(FeatureManager):
         return self.active_managers['sirius'].get_feature(f_id)
 
 
-def write_table(project_import_manager: ProjectImportManager) -> None:
-    columns = ['polarity']
+def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    columns = []
     excluded_columns = []
 
     f_ids = project_import_manager.feature_ids
@@ -113,7 +113,7 @@ if __name__ == '__main__':
     metaboscape = MetaboscapeImportManager(path_metaboscape_csv)
     mgf = MgfImportManager(path_mgf_sirius)
     gnps = GnpsImportManager(path_gnps_folder=path_gnps_folder)
-    sr = SiriusImportManager.from_export(path_folder_export=path_sirius_folder, export_tag='all')
+    sr = SiriusImportManager(path_folder_export=path_sirius_folder, export_tag='all')
 
     project_import_manager = ProjectImportManager(mgf_manager=mgf,
                                                   gnps_manager=gnps,

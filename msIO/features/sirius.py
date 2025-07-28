@@ -119,14 +119,15 @@ class FeatureSirius(FeatureBaseClass):
         scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
                                for r, c in self.formula_candidates.items()]
         idx = np.argmax(scores)
-        rank = list(self.formula_candidates.keys())[idx]
+        rank: int = list(self.formula_candidates.keys())[idx]
         self.highest_scoring_candidate_rank = rank
         candidate = self.formula_candidates[rank]
         formula: str = candidate.formula_sirius
-        for obj_dict in [self.compound_groups, self.compound_candidates, self.formula_candidates]:
-            if formula not in obj_dict:
-                continue
-            add_attributes |= obj_dict[formula].__dict__
+
+        for obj_dict in [self.compound_groups, self.compound_candidates]:
+            if formula in obj_dict:
+                add_attributes |= obj_dict[formula].__dict__
+        add_attributes |= self.formula_candidates[rank].__dict__
 
         self.__dict__ |= add_attributes
 

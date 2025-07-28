@@ -1,9 +1,7 @@
 import os
-from typing import Self, Iterable
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.sirius import FeatureSirius
@@ -104,6 +102,7 @@ class SiriusImportManager(FeatureManager):
     ) -> None:
         self.path_folder_export = path_folder_export
         self.export_tag = export_tag
+        self._read_tables()
 
     @property
     def feature_ids(self) -> np.ndarray:
@@ -137,12 +136,6 @@ class SiriusImportManager(FeatureManager):
         f = FeatureSirius.from_tables(f_id, self._tables)
         self._features[f_id] = f
 
-    @classmethod
-    def from_export(cls, path_folder_export: str, export_tag: str = None) -> Self:
-        new = cls(path_folder_export=path_folder_export, export_tag=export_tag)
-        new._read_tables()
-        return new
-
 
 if __name__ == '__main__':
     path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
@@ -152,6 +145,6 @@ if __name__ == '__main__':
 
     props = read_compound_info(test_folder_1)
 
-    sr = SiriusImportManager.from_export(path_folder_export=path_full_folder, export_tag='all')
+    sr = SiriusImportManager(path_folder_export=path_full_folder, export_tag='all')
 
-    f = sr.get_feature(1)
+    f = sr.get_feature(2)
