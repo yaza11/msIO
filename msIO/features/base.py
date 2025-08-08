@@ -1,4 +1,4 @@
-class FeatureBaseClass:
+class FeatureBaseClass(SqlBaseClass):
     rt_seconds: float = None
     rt_minutes: float = None
 
