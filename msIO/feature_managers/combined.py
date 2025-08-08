@@ -70,6 +70,7 @@ class ProjectImportManager(FeatureManager):
 
 
 def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
+    """Compile feature attributes in dataframes"""
     columns = []
     excluded_columns = []
 
