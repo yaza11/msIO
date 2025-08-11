@@ -28,8 +28,8 @@ class FeatureBaseClass:
     """Some universal functionality for Feature objects."""
     __abstract__ = True  # no table created for this class
 
-    rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    rt_minutes: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # rt_minutes: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     @classmethod
     def py_types(cls) -> dict[str, type]:
@@ -65,10 +65,16 @@ class FeatureBaseClass:
         # use type annotations to convert input kwargs to right types
         kwargs_converted = {k: self._convert_type(k, v) for k, v in kwargs.items()}
         self.__dict__ |= kwargs_converted
+        # infer one from the other if only one is provided
         if kwargs_converted.get('rt_minutes') is not None and kwargs_converted.get('rt_seconds') is None:
             self.rt_seconds = kwargs_converted['rt_minutes'] * 60
         elif kwargs_converted.get('rt_seconds') is not None and kwargs_converted.get('rt_minutes') is None:
             self.rt_minutes = kwargs_converted['rt_seconds'] / 60
+
+        self.__post_init__()
+
+    def __post_init__(self):
+        pass
 
 
 if __name__ == '__main__':
