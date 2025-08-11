@@ -68,6 +68,9 @@ class ProjectImportManager(FeatureManager):
         assert 'sirius' in self.active_managers
         return self.active_managers['sirius'].get_feature(f_id)
 
+    def to_sql(self, db_file: str) -> 'Session':
+        ...
+
 
 def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
     """Compile feature attributes in dataframes"""
@@ -135,6 +138,6 @@ if __name__ == '__main__':
     # f_mgf.ms2.plot(); plt.show()
 
     # %%
-    res = write_table(project_import_manager)
+    # res = write_table(project_import_manager)
 
 

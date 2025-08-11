@@ -138,13 +138,14 @@ class SiriusImportManager(FeatureManager):
 
 
 if __name__ == '__main__':
-    path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
+    # path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
     path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
 
-    test_folder_1 = os.path.join(path_test_folder, '1_timsTOF_combined_re.sirius_1')
-
-    props = read_compound_info(test_folder_1)
+    # test_folder_1 = os.path.join(path_test_folder, '1_timsTOF_combined_re.sirius_1')
+    # props = read_compound_info(test_folder_1)
 
     sr = SiriusImportManager(path_folder_export=path_full_folder, export_tag='all')
 
     f = sr.get_feature(2)
+
+    f2 = f.get_highest_scoring()

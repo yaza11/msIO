@@ -117,4 +117,4 @@ if __name__ == '__main__':
     # peak_lists[1][1].plot()
     # plt.show()
 
-    f = mgf.get_feature(2)
+    f = mgf.get_feature(1)
