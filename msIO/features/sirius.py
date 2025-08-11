@@ -1,13 +1,13 @@
 from dataclasses import dataclass
 
 from typing import Optional, Self
-from sqlalchemy import ForeignKey, String, Float, Integer
+from sqlalchemy import ForeignKey, String, Float, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 import numpy as np
 import pandas as pd
 
-from msIO.features.base import FeatureBaseClass, SqlBaseClass
+from msIO.features.base import FeatureBaseClass, SqlBaseClass, CONVERTABLE_TYPES
 
 
 class FormulaCandidate(SqlBaseClass, FeatureBaseClass):
@@ -106,8 +106,13 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
         cascade="all, delete-orphan"
     )
 
-    use_zodiac_scoring_for_best: Mapped[bool] = mapped_column(default=True)
-    highest_scoring_candidate_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    use_zodiac_scoring_for_best: Mapped[bool] = mapped_column(Boolean, default=True)
+    highest_scoring_formula: Mapped[Optional[String]] = mapped_column(String, nullable=True)
+
+    def __init__(self, use_zodiac_scoring_for_best: bool = True, **kwargs):
+        super().__init__(**kwargs)
+        # TODO: find better method to set default value
+        self.use_zodiac_scoring_for_best = use_zodiac_scoring_for_best
 
     def formula_candidates_by_rank(self) -> dict[int, FormulaCandidate]:
         return {fc.formula_rank: fc for fc in self.formula_candidates if fc.formula_rank is not None}
@@ -148,28 +153,55 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
                    compound_candidates=compound_candidates,
                    compound_groups=compound_groups)
 
-    def _set_highest_scoring_formula_rank(self):
+    def _set_highest_scoring_formula(self):
         scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
                                for c in self.formula_candidates]
         idx = int(np.nanargmax(scores))
         best_candidate = self.formula_candidates[idx]
-        self.highest_scoring_candidate_rank = best_candidate.formula_rank
+        self.highest_scoring_formula = best_candidate.formula_sirius
 
-    def __post_init__(self):
-        """flatten attributes by taking properties from highest ranked formula"""
-        # TODO: rewrite to properties and access child attributes instead
+    def get_highest_scoring(self, prefer_npc: bool = True) -> Self:
+        """flatten attributes by taking properties from highest ranked formula,
+        returns new instance (shallow copy with added attributes)"""
+        def add_from_highest_scoring(obj) -> None:
+            new.__dict__ |= obj.__dict__
 
-        # add attributes from highest scoring formula
-        scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
-                               for c in self.formula_candidates]
-        idx = int(np.nanargmax(scores))
-        best_candidate = self.formula_candidates[idx]
-        self.highest_scoring_candidate_rank = best_candidate.formula_rank
+        if self.highest_scoring_formula is None:
+            self._set_highest_scoring_formula()
 
-        # Find matching compound group and candidate for that formula
-        for obj_list in (self.compound_groups, self.compound_candidates):
-            for o in obj_list:
-                if o.formula_sirius == best_candidate.formula_sirius:
-                    self.__dict__ |= o.__dict__
+        new = self.__class__()
+        new.__dict__ |= self.__dict__
 
-        self.__dict__ |= best_candidate.__dict__
+        # add attributes of objects in reverse order of chain in inference as later attributes override previous ones
+        # find best for compound groups based on probability
+        candidates_compound_groups = [c for c in self.compound_groups if c.formula_sirius == self.highest_scoring_formula]
+        if len(candidates_compound_groups) > 0:
+            # if there are multiple candidates, use the one with the highest probability
+            prob_attrs = [a for a in CompoundGroup.__annotations__.keys() if a.endswith('probability') and not (a.startswith('npc') ^ prefer_npc)]
+            candidates_probabilities = [max([c.__getattribute__(a) for a in prob_attrs]) for c in candidates_compound_groups]
+            obj_idx = candidates_probabilities.index(max(candidates_probabilities))
+            add_from_highest_scoring(candidates_compound_groups[obj_idx])
+
+        candidates_compounds = [c for c in self.compound_candidates if c.formula_sirius == self.highest_scoring_formula]
+        # find best candidate based on confidence score or sirius/zodiac score if all confidence scores are nan
+        if len(candidates_compounds) > 0:
+            if any([c.confidence_score > 0 for c in candidates_compounds]):
+                scores = [c.confidence_score for c in candidates_compounds]
+            elif self.use_zodiac_scoring_for_best:
+                scores = [c.zodiac_score for c in candidates_compounds]
+            else:
+                scores = [c.sirius_score for c in candidates_compounds]
+            idx = np.nanargmax(scores)
+            add_from_highest_scoring(candidates_compounds[idx])
+
+        candidates_formula = [c for c in self.formula_candidates if c.formula_sirius == self.highest_scoring_formula]
+        # there should always be at least 1
+        scores = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score for c in candidates_formula]
+        add_from_highest_scoring(candidates_formula[np.nanargmax(scores)])
+
+        return new
+
+
+if __name__ == '__main__':
+    pass
+    f = FeatureSirius()
