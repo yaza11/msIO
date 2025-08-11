@@ -61,7 +61,7 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
         for k, v in ser.items():
             if k.endswith('MaxIntensity') or k.endswith('MeanIntensity'):
                 continue
-            if (k not in METABOSCAPE_CSV_RENAME_COLUMNS.keys()) or (k not in METABOSCAPE_CSV_RENAME_COLUMNS.values()):
+            if (k not in METABOSCAPE_CSV_RENAME_COLUMNS.keys()) and (k not in METABOSCAPE_CSV_RENAME_COLUMNS.values()):
                 # print(f'column "{k}" could not be converted, assuming it contains intensities')
                 # set nan values to 0
                 if isinstance(v, str):
@@ -75,7 +75,6 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                 else:
                     k_new = METABOSCAPE_CSV_RENAME_COLUMNS[k]
                 processed[k_new] = cls._convert_type(k_new, v)
-        print(processed['intensities'])
         return cls(**processed)
 
     @property
