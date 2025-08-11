@@ -28,9 +28,6 @@ class FeatureBaseClass:
     """Some universal functionality for Feature objects."""
     __abstract__ = True  # no table created for this class
 
-    # rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    # rt_minutes: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-
     @classmethod
     def py_types(cls) -> dict[str, type]:
         return get_py_dtypes_for_obj(cls)
