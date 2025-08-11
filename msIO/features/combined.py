@@ -5,12 +5,12 @@ Each feature is associated with molecular properties, MS1, MS2, annotations, ...
 """
 from typing import Literal, Iterable
 
-from msIO import PeakList
 from msIO.features.base import FeatureBaseClass
 from msIO.features.gnps import FeatureGnpsNode
 from msIO.features.metaboscape import FeatureMetaboScape
 from msIO.features.mgf import FeatureMgf
 from msIO.features.sirius import FeatureSirius
+from msIO.list_of_ions.base import PeakList
 
 
 class FeatureCombined(FeatureBaseClass):
