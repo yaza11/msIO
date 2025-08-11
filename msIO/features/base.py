@@ -41,6 +41,12 @@ class FeatureBaseClass:
         f = cls.py_types()[attr]
         if f not in CONVERTABLE_TYPES:
             return val
+        if f is int:
+            try:
+                v = f(val)
+            except ValueError:
+                v = None
+            return v
         return f(val)
 
     def __init__(self, **kwargs):
