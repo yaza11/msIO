@@ -10,7 +10,6 @@ import pandas as pd
 from msIO.features.base import FeatureBaseClass, SqlBaseClass
 
 
-@dataclass
 class FormulaCandidate(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "formula_candidate"
 
@@ -34,7 +33,6 @@ class FormulaCandidate(SqlBaseClass, FeatureBaseClass):
     feature: Mapped["FeatureSirius"] = relationship(back_populates="formula_candidates")
 
 
-@dataclass
 class CompoundCandidate(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "compound_candidate"
 
@@ -61,7 +59,6 @@ class CompoundCandidate(SqlBaseClass, FeatureBaseClass):
     feature: Mapped["FeatureSirius"] = relationship(back_populates="compound_candidates")
 
 
-@dataclass
 class CompoundGroup(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "compound_group"
 
@@ -91,7 +88,6 @@ class CompoundGroup(SqlBaseClass, FeatureBaseClass):
     feature: Mapped["FeatureSirius"] = relationship(back_populates="compound_groups")
 
 
-@dataclass
 class FeatureSirius(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "feature_sirius"
 
@@ -152,9 +148,16 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
                    compound_candidates=compound_candidates,
                    compound_groups=compound_groups)
 
+    def _set_highest_scoring_formula_rank(self):
+        scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
+                               for c in self.formula_candidates]
+        idx = int(np.nanargmax(scores))
+        best_candidate = self.formula_candidates[idx]
+        self.highest_scoring_candidate_rank = best_candidate.formula_rank
+
     def __post_init__(self):
-        # TODO: rewrite to properties and access child attributes instead
         """flatten attributes by taking properties from highest ranked formula"""
+        # TODO: rewrite to properties and access child attributes instead
 
         # add attributes from highest scoring formula
         scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
