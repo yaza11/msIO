@@ -15,7 +15,6 @@ GNPS_RENAME: dict[str, str] = {
 }
 
 
-@dataclass
 class FeatureGnpsNode(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "feature_gnps_node"
 

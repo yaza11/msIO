@@ -43,7 +43,6 @@ def parse_ion_props(inpt: list[str]) -> dict:
     return kwargs
 
 
-@dataclass
 class MsSpec(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "ms_spec"
 
@@ -68,7 +67,6 @@ class PolarityEnum(PyEnum):
     NEG = "neg"
 
 
-@dataclass
 class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     """Multiple entries can belong to a single feature id
     (when deconvolution fails or when multiple adducts are found).

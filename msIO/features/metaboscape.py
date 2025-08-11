@@ -34,7 +34,6 @@ class Intensity(SqlBaseClass, FeatureBaseClass):
     feature: Mapped["FeatureMetaboScape"] = relationship(back_populates="intensities")
 
 
-@dataclass
 class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     """Container for features living in the exported feature table from MetaboScape"""
     __tablename__ = "feature_metaboscape"
