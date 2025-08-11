@@ -9,5 +9,5 @@ setup(
     description='Reading and writing functions for different mass spectrometry '
                 'related file types',
     packages=find_packages(),
-    install_requires=['numpy', 'matplotlib', 'pandas', 'tqdm'],
+    install_requires=['numpy', 'matplotlib', 'pandas', 'tqdm', 'sqlalchemy'],
 )
