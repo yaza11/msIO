@@ -17,8 +17,7 @@ METABOSCAPE_CSV_RENAME_COLUMNS: dict[str, str] = {
     'MOLECULAR_FORMULA': 'formula_metaboscape',
     'ADDUCT': 'adduct_metaboscape',
     'KEGG': 'KEGG',
-    'CAS': 'CAS',
-
+    'CAS': 'CAS'
 }
 
 
