@@ -4,6 +4,9 @@ from sqlalchemy import Float
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
+CONVERTABLE_TYPES = {int, float, bool, str}
+
+
 def get_py_dtypes_for_obj(obj: object) -> dict[str, type]:
     dtypes: dict[str, type] = {}
     for attr_name, mappable in obj.__annotations__.items():
@@ -35,10 +38,23 @@ class FeatureBaseClass:
     @classmethod
     def _convert_type(cls, attr: str, val):
         """Use annotations to get desired type"""
-        return cls.py_types()[attr](val)
+        f = cls.py_types()[attr]
+        if f not in CONVERTABLE_TYPES:
+            return val
+        return f(val)
 
     def __init__(self, **kwargs):
         super().__init__()
+
+        # types_from_annotations: dict[str, type] = self.py_types()
+        #
+        # def do_nothing_conversion(val):
+        #     return val
+        #
+        # def convert_func(attr, val):
+        #     f = types_from_annotations.get(attr, do_nothing_conversion)
+        #     print(f'attempting to convert {attr} with {val=} to {f}')
+        #     return f(val)
 
         # use type annotations to convert input kwargs to right types
         kwargs_converted = {k: self._convert_type(k, v) for k, v in kwargs.items()}
