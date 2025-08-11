@@ -3,7 +3,7 @@ from typing import Self, Optional
 
 from enum import Enum as PyEnum
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy import ForeignKey
+from sqlalchemy import ForeignKey, Boolean, String, Integer, Float
 from sqlalchemy import Enum
 
 from msIO.features.base import FeatureBaseClass, SqlBaseClass
@@ -48,12 +48,12 @@ class MsSpec(SqlBaseClass, FeatureBaseClass):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    mz: Mapped[Optional[float]] = None
-    ms_level: Mapped[Optional[int]] = None
-    charge: Mapped[Optional[int]] = None
-    rt_seconds: Mapped[Optional[float]] = None
-    ion: Mapped[Optional[str]] = None
-    rt_minutes: Mapped[Optional[float]] = None
+    mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ms_level: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    charge: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    rt_minutes: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     peaks_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
     peaks: Mapped[Optional["PeakList"]] = relationship()
@@ -80,13 +80,13 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
         Enum("pos", "neg", name="polarity_enum"),
         nullable=True
     )
-    has_multiple_adducts: Mapped[Optional[bool]] = None
+    has_multiple_adducts: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
 
-    mz: Mapped[Optional[float]] = None
-    charge: Mapped[Optional[int]] = None
-    rt_seconds: Mapped[Optional[float]] = None
-    ion: Mapped[Optional[str]] = None
-    rt_minutes: Mapped[Optional[float]] = None
+    mz: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    charge: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    ion: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    rt_minutes: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     ms1_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
     ms1: Mapped[Optional["PeakList"]] = relationship(foreign_keys=[ms1_id])
