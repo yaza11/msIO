@@ -1,11 +1,13 @@
 from dataclasses import dataclass
-from typing import Literal, Self
+from typing import Self, Optional
 
-import numpy as np
+from enum import Enum as PyEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy import ForeignKey
+from sqlalchemy import Enum
 
-from msIO import PeakList
-from msIO.features.base import FeatureBaseClass
-
+from msIO.features.base import FeatureBaseClass, SqlBaseClass
+from msIO.list_of_ions.base import PeakList
 
 # select which ion is most likely (first in list)
 ION_PREFERENCES = ['[M+H]+', '[M+Na]+', '[M+K]+', '[M+NH4]+', '[M]+', '[M+H+H]2+', '[M+H+H2]3+']
@@ -42,38 +44,61 @@ def parse_ion_props(inpt: list[str]) -> dict:
 
 
 @dataclass
-class MsSpec:
-    mz: float = None
-    ms_level: int = None
-    charge: int = None
+class MsSpec(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "ms_spec"
 
-    rt_seconds: float = None
-    ion: str = None
-    rt_minutes: float = None
+    id: Mapped[int] = mapped_column(primary_key=True)
 
-    peaks: PeakList = None
+    mz: Mapped[Optional[float]] = None
+    ms_level: Mapped[Optional[int]] = None
+    charge: Mapped[Optional[int]] = None
+    rt_seconds: Mapped[Optional[float]] = None
+    ion: Mapped[Optional[str]] = None
+    rt_minutes: Mapped[Optional[float]] = None
+
+    peaks_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
+    peaks: Mapped[Optional["PeakList"]] = relationship()
+
+    feature_mgf_id: Mapped[int] = mapped_column(ForeignKey("feature_mgf.id"), nullable=False)
+    feature_mgf: Mapped["FeatureMgf"] = relationship(back_populates="ms_specs")
+
+
+class PolarityEnum(PyEnum):
+    POS = "pos"
+    NEG = "neg"
 
 
 @dataclass
-class FeatureMgf(FeatureBaseClass):
+class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     """Multiple entries can belong to a single feature id
     (when deconvolution fails or when multiple adducts are found).
     This object sets ambiguous parameters by choosing from the preferred ion
     order"""
-    feature_id: int = None
-    polarity: Literal['pos', 'neg'] = None  # should always be the same for all adducts
-    ms_specs: list[MsSpec] = None
-    has_multiple_adducts: bool = None
+    __tablename__ = "feature_mgf"
 
-    # set from preferred ion
-    mz: float = None
-    charge: int = None
-    rt_seconds: float = None
-    ion = None
-    rt_minutes: float = None
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feature_id: Mapped[Optional[int]] = None
+    polarity: Mapped[Optional[str]] = mapped_column(
+        Enum("pos", "neg", name="polarity_enum"),
+        nullable=True
+    )
+    has_multiple_adducts: Mapped[Optional[bool]] = None
 
-    ms1: PeakList = None
-    ms2: PeakList = None
+    mz: Mapped[Optional[float]] = None
+    charge: Mapped[Optional[int]] = None
+    rt_seconds: Mapped[Optional[float]] = None
+    ion: Mapped[Optional[str]] = None
+    rt_minutes: Mapped[Optional[float]] = None
+
+    ms1_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
+    ms1: Mapped[Optional["PeakList"]] = relationship(foreign_keys=[ms1_id])
+
+    ms2_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
+    ms2: Mapped[Optional["PeakList"]] = relationship(foreign_keys=[ms2_id])
+
+    ms_specs: Mapped[list["MsSpec"]] = relationship(
+        back_populates="feature_mgf", cascade="all, delete-orphan"
+    )
 
     @classmethod
     def from_lines(cls, inpt: list[str]) -> Self:
@@ -85,7 +110,7 @@ class FeatureMgf(FeatureBaseClass):
             self.has_multiple_adducts = False
             return
 
-        adducts: dict[tuple[str, int], MsSpec] = {(msspec.ion, msspec.ms_level): msspec for msspec in self.ms_specs}
+        adducts: dict[tuple[str, int], "MsSpec"] = {(msspec.ion, msspec.ms_level): msspec for msspec in self.ms_specs}
         self.has_multiple_adducts = len(set([k[0] for k in adducts.keys()])) > 1
         # on first pass, try to find adduct for which both levels exist
         for add_pref in ION_PREFERENCES:
@@ -137,4 +162,10 @@ def test():
 
 
 if __name__ == '__main__':
-    f = test()
+    # f = test()
+
+    pl = PeakList(mzs=[1, 2, 3], intensities=[3, 4, 5])
+    spec = MsSpec(mz=100, ms_level=1, charge=1, peaks=pl)
+
+    mgf_feat = FeatureMgf(polarity='pos', ms_specs=[spec])
+
