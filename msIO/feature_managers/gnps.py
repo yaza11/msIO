@@ -44,3 +44,4 @@ if __name__ == '__main__':
 
     gnps = GnpsImportManager(path_gnps_folder=path_gnps_folder)
 
+    f = gnps.get_feature(1)

@@ -35,4 +35,4 @@ if __name__ == '__main__':
 
     mm = MetaboscapeImportManager(path_file_csv)
 
-    f= mm.get_feature(1)
+    f = mm.get_feature(1)
