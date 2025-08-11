@@ -1,111 +1,151 @@
 from dataclasses import dataclass
 
+from typing import Optional, Self
+from sqlalchemy import ForeignKey, String, Float, Integer
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 import numpy as np
 import pandas as pd
 
-from msIO.features.base import FeatureBaseClass
+from msIO.features.base import FeatureBaseClass, SqlBaseClass
 
 
 @dataclass
-class FormulaCandidate:
-    feature_id: int
-    formula_sirius: str
-    formula_rank: int = None
-    adduct_sirius: str = None
-    zodiac_score: float = None
-    sirius_score: float = None
-    tree_score: float = None
-    isotope_score: float = None
-    num_explained_peaks: int = None
-    explained_intensity: float = None
-    median_mass_error_fragments_ppm: float = None
-    mass_error_precursor_ppm: float = None
-    lipid_class: str = None
-    rt_seconds: float = None
-    sirius_compound_folder: str = None
+class FormulaCandidate(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "formula_candidate"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    formula_sirius: Mapped[str] = mapped_column(String, nullable=True)
+    formula_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    adduct_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    zodiac_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sirius_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    tree_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    isotope_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    num_explained_peaks: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    explained_intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    median_mass_error_fragments_ppm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mass_error_precursor_ppm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    lipid_class: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    rt_seconds: Mapped[Optional[float]] = mapped_column(Integer, nullable=True)
+    sirius_compound_folder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    feature_id: Mapped[int] = mapped_column(ForeignKey("feature_sirius.feature_id"))
+    feature: Mapped["FeatureSirius"] = relationship(back_populates="formula_candidates")
 
 
 @dataclass
-class CompoundCandidate:
-    confidence_rank: int = None
-    structure_per_id_rank: int = None
-    formula_rank: int = None
-    num_adducts: int = None
-    num_predicted_fingerprints: int = None
-    confidence_score: float = None
-    finger_id_score: float = None
-    zodiac_score: float = None
-    sirius_score: float = None
-    formula_sirius: str = None
-    adduct_sirius: str = None
-    inchi: str = None
-    name_sirius: str = None
-    smiles: str = None
-    xlogp: float = None
-    rt_seconds: float = None
-    feature_id: int = None
-    sirius_compound_folder: str = None
+class CompoundCandidate(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "compound_candidate"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    confidence_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    structure_per_id_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    formula_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    num_adducts: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    num_predicted_fingerprints: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    confidence_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    finger_id_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    zodiac_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sirius_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    formula_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    adduct_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    inchi: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    name_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    smiles: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    xlogp: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    sirius_compound_folder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    feature_id: Mapped[int] = mapped_column(ForeignKey("feature_sirius.feature_id"))
+    feature: Mapped["FeatureSirius"] = relationship(back_populates="compound_candidates")
 
 
 @dataclass
-class CompoundGroup:
-    sirius_compound_folder: str = None
-    formula_sirius: str = None
-    adduct_sirius: str = None
-    npc_pathway_name: str = None
-    npc_pathway_probability: float = None
-    npc_superclass_name: str = None
-    npc_superclass_probability: float = None
-    npc_class_name: str = None
-    npc_class_probability: float = None
-    cf_most_specific_name: str = None
-    cf_most_specific_probability: float = None
-    cf_level5_name: str = None
-    cf_level5_probability: float = None
-    cf_subclass_name: str = None
-    cf_subclass_probability: float = None
-    cf_class_name: str = None
-    cf_class_probability: float = None
-    cf_superclass_name: str = None
-    cf_superclass_probability: float = None
-    cf_path: str = None
-    feature_id: int = None
+class CompoundGroup(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "compound_group"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sirius_compound_folder: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    formula_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    adduct_sirius: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    npc_pathway_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    npc_pathway_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    npc_superclass_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    npc_superclass_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    npc_class_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    npc_class_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_most_specific_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cf_most_specific_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_level5_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cf_level5_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_subclass_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cf_subclass_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_class_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cf_class_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_superclass_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    cf_superclass_probability: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    cf_path: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    feature_id: Mapped[int] = mapped_column(ForeignKey("feature_sirius.feature_id"))
+    feature: Mapped["FeatureSirius"] = relationship(back_populates="compound_groups")
 
 
 @dataclass
-class FeatureSirius(FeatureBaseClass):
-    feature_id: int
-    formula_candidates: dict[int, FormulaCandidate] = None  # key: rank
-    compound_candidates: dict[str, CompoundCandidate] = None  # key: formula
-    compound_groups: dict[str, CompoundGroup] = None  # key: formula
+class FeatureSirius(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "feature_sirius"
 
-    use_zodiac_scoring_for_best: bool = True
-    highest_scoring_candidate_rank: int = None
+    feature_id: Mapped[int] = mapped_column(primary_key=True)
+
+    formula_candidates: Mapped[list[FormulaCandidate]] = relationship(
+        back_populates="feature",
+        cascade="all, delete-orphan"
+    )
+    compound_candidates: Mapped[list[CompoundCandidate]] = relationship(
+        back_populates="feature",
+        cascade="all, delete-orphan"
+    )
+    compound_groups: Mapped[list[CompoundGroup]] = relationship(
+        back_populates="feature",
+        cascade="all, delete-orphan"
+    )
+
+    use_zodiac_scoring_for_best: Mapped[bool] = mapped_column(default=True)
+    highest_scoring_candidate_rank: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    def formula_candidates_by_rank(self) -> dict[int, FormulaCandidate]:
+        return {fc.formula_rank: fc for fc in self.formula_candidates if fc.formula_rank is not None}
+
+    def compound_candidates_by_formula(self) -> dict[str, CompoundCandidate]:
+        return {cc.formula_sirius: cc for cc in self.compound_candidates if cc.formula_sirius}
+
+    def compound_groups_by_formula(self) -> dict[str, CompoundGroup]:
+        return {cg.formula_sirius: cg for cg in self.compound_groups if cg.formula_sirius}
 
     @classmethod
-    def from_tables(cls, feature_id: int, tables: dict[str, pd.DataFrame]):
+    def from_tables(cls, feature_id: int, tables: dict[str, pd.DataFrame]) -> Self:
         def select_rows_by_feature(df: pd.DataFrame) -> pd.DataFrame:
             mask = df.feature_id == feature_id
             return df.loc[mask, :]
 
-        formula_candidates = {}
+        formula_candidates = []
         sub_df = select_rows_by_feature(tables['formula_identifications'])
         for _, row in sub_df.iterrows():
             f = FormulaCandidate(**row.to_dict())
-            formula_candidates[row.formula_rank] = f
+            formula_candidates.append(f)
 
-        compound_candidates = {}
+        compound_candidates = []
         sub_df = select_rows_by_feature(tables['compound_identifications'])
         for _, row in sub_df.iterrows():
             f = CompoundCandidate(**row.to_dict())
-            compound_candidates[row.formula_sirius] = f
+            compound_candidates.append(f)
         # TODO: fill nan values, where possible
 
-        compound_groups = {}
+        compound_groups = []
         sub_df = select_rows_by_feature(tables['canopus_formula_summary'])
         for _, row in sub_df.iterrows():
             f = CompoundGroup(**row.to_dict())
-            compound_groups[row.formula_sirius] = f
+            compound_groups.append(f)
 
         return cls(feature_id=feature_id,
                    formula_candidates=formula_candidates,
@@ -113,21 +153,20 @@ class FeatureSirius(FeatureBaseClass):
                    compound_groups=compound_groups)
 
     def __post_init__(self):
+        # TODO: rewrite to properties and access child attributes instead
         """flatten attributes by taking properties from highest ranked formula"""
-        add_attributes = {}
+
         # add attributes from highest scoring formula
         scores: list[float] = [c.zodiac_score if self.use_zodiac_scoring_for_best else c.sirius_score
-                               for r, c in self.formula_candidates.items()]
-        idx = np.argmax(scores)
-        rank: int = list(self.formula_candidates.keys())[idx]
-        self.highest_scoring_candidate_rank = rank
-        candidate = self.formula_candidates[rank]
-        formula: str = candidate.formula_sirius
+                               for c in self.formula_candidates]
+        idx = int(np.nanargmax(scores))
+        best_candidate = self.formula_candidates[idx]
+        self.highest_scoring_candidate_rank = best_candidate.formula_rank
 
-        for obj_dict in [self.compound_groups, self.compound_candidates]:
-            if formula in obj_dict:
-                add_attributes |= obj_dict[formula].__dict__
-        add_attributes |= self.formula_candidates[rank].__dict__
+        # Find matching compound group and candidate for that formula
+        for obj_list in (self.compound_groups, self.compound_candidates):
+            for o in obj_list:
+                if o.formula_sirius == best_candidate.formula_sirius:
+                    self.__dict__ |= o.__dict__
 
-        self.__dict__ |= add_attributes
-
+        self.__dict__ |= best_candidate.__dict__
