@@ -1,7 +1,4 @@
-from typing import Optional
-
-from sqlalchemy import Float
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy.orm import DeclarativeBase
 
 
 CONVERTABLE_TYPES = {int, float, bool, str}
@@ -26,7 +23,6 @@ class SqlBaseClass(DeclarativeBase):
 
 class FeatureBaseClass:
     """Some universal functionality for Feature objects."""
-    __abstract__ = True  # no table created for this class
 
     @classmethod
     def py_types(cls) -> dict[str, type]:
@@ -61,13 +57,15 @@ class FeatureBaseClass:
 
         # use type annotations to convert input kwargs to right types
         kwargs_converted = {k: self._convert_type(k, v) for k, v in kwargs.items()}
-        self.__dict__ |= kwargs_converted
-        # infer one from the other if only one is provided
-        if kwargs_converted.get('rt_minutes') is not None and kwargs_converted.get('rt_seconds') is None:
-            self.rt_seconds = kwargs_converted['rt_minutes'] * 60
-        elif kwargs_converted.get('rt_seconds') is not None and kwargs_converted.get('rt_minutes') is None:
-            self.rt_minutes = kwargs_converted['rt_seconds'] / 60
 
+        for k, v in kwargs_converted.items():
+            setattr(self, k, v)  # ensures ORM descriptors are used
+        if getattr(self, 'rt_minutes', None) is not None and getattr(self, 'rt_seconds', None) is None:
+            self.rt_seconds = self.rt_minutes * 60
+        elif getattr(self, 'rt_seconds', None) is not None and getattr(self, 'rt_minutes', None) is None:
+            self.rt_minutes = self.rt_seconds / 60
+
+        # define hook manually such that we don't need to rely on dataclass
         self.__post_init__()
 
     def __post_init__(self):
