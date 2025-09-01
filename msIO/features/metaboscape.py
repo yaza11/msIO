@@ -29,13 +29,13 @@ class Intensity(SqlBaseClass, FeatureBaseClass):
     sample_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    feature_id: Mapped[int] = mapped_column(ForeignKey("feature_metaboscape.id"), nullable=False)
+    feature_id: Mapped[int] = mapped_column(ForeignKey("metaboscape_features.id"), nullable=False)
     feature: Mapped["FeatureMetaboScape"] = relationship(back_populates="intensities")
 
 
 class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     """Container for features living in the exported feature table from MetaboScape"""
-    __tablename__ = "feature_metaboscape"
+    __tablename__ = "metaboscape_features"
     # __allow_unmapped__ = True
 
     id: Mapped[int] = mapped_column(primary_key=True)  # include only if not inherited
@@ -55,6 +55,9 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
         cascade="all, delete-orphan"
     )
 
+    combined_feature_id: Mapped[Optional[int]] = mapped_column(ForeignKey('features.id'))
+    combined_feature: Mapped[Optional["FeatureCombined"]] = relationship(back_populates='metaboscape')
+
     @classmethod
     def from_dataframe_row(cls, ser: pd.Series):
         processed = {'intensities': []}
@@ -68,7 +71,6 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                     v = float(v)
                 v = 0 if not (v > 0) else int(v)
                 processed['intensities'].append(Intensity(sample_name=k, value=v))
-                print(f'adding intensity {v} for sample {k}')
             else:
                 if k in METABOSCAPE_CSV_RENAME_COLUMNS.values():
                     k_new = k
@@ -99,3 +101,14 @@ if __name__ == '__main__':
     ser = df.iloc[0, :]
 
     f = FeatureMetaboScape.from_dataframe_row(ser)
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+    from msIO.features.base import SqlBaseClass
+
+    engine = create_engine("sqlite+pysqlite:///:memory:")
+    SqlBaseClass.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        session.add(f)
+        session.commit()

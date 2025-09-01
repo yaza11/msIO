@@ -109,6 +109,9 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
     use_zodiac_scoring_for_best: Mapped[bool] = mapped_column(Boolean, default=True)
     highest_scoring_formula: Mapped[Optional[String]] = mapped_column(String, nullable=True)
 
+    combined_feature_id: Mapped[Optional[int]] = mapped_column(ForeignKey('features.id'))
+    combined_feature: Mapped[Optional["FeatureCombined"]] = relationship(back_populates='sirius')
+
     def __init__(self, use_zodiac_scoring_for_best: bool = True, **kwargs):
         super().__init__(**kwargs)
         # TODO: find better method to set default value

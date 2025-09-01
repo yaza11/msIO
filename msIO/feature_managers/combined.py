@@ -1,3 +1,4 @@
+import os.path
 import typing
 from functools import cached_property
 from typing import Iterable, Literal, Any
@@ -11,6 +12,7 @@ from msIO.feature_managers.base import FeatureManager
 from msIO.feature_managers.gnps import GnpsImportManager
 from msIO.feature_managers.metaboscape import MetaboscapeImportManager
 from msIO.feature_managers.sirius import SiriusImportManager
+from msIO.features.base import SqlBaseClass
 from msIO.features.combined import FeatureCombined
 
 
@@ -48,8 +50,8 @@ class ProjectImportManager(FeatureManager):
         return np.array(sorted(f_ids))
 
     def _inner_missing_feature(self, f_id) -> None:
-        features = [m.get_feature(f_id) for m in self.active_managers.values() if f_id in m.feature_ids]
-        f = FeatureCombined(features)
+        features = {name: m.get_feature(f_id) for name, m in self.active_managers.items() if f_id in m.feature_ids}
+        f = FeatureCombined(**features)
         self._features[f_id] = f
 
     def get_metaboscape_feature(self, f_id: int):
@@ -68,8 +70,23 @@ class ProjectImportManager(FeatureManager):
         assert 'sirius' in self.active_managers
         return self.active_managers['sirius'].get_feature(f_id)
 
-    def to_sql(self, db_file: str) -> 'Session':
-        ...
+    def to_sql(self, db_file: str, feature_ids = None) -> None:
+        from msIO.sql.session import get_sessionmaker
+
+        if feature_ids is None:
+            feature_ids = self.feature_ids
+
+        Session = get_sessionmaker(db_file)
+
+        with Session() as session:
+            for f_id in tqdm(feature_ids, desc='adding features to DB', total=len(feature_ids)):
+                # features = [m.get_feature(f_id) for m in self.active_managers.values() if f_id in m.feature_ids]
+                # for f in features:
+                #     # print(f'adding {f.__class__.__name__} to session')
+                #     session.add(f)
+                f = self.get_feature(f_id)
+                session.add(f)
+            session.commit()
 
 
 def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFrame, pd.DataFrame, dict]:
@@ -116,6 +133,7 @@ if __name__ == '__main__':
 
     metaboscape = MetaboscapeImportManager(path_metaboscape_csv)
     mgf = MgfImportManager(path_mgf_sirius)
+    # mgf = None
     gnps = GnpsImportManager(path_gnps_folder=path_gnps_folder)
     sr = SiriusImportManager(path_folder_export=path_sirius_folder, export_tag='all')
 
@@ -125,19 +143,27 @@ if __name__ == '__main__':
                                                   metaboscape_manager=metaboscape)
 
     # %%
-    f_id = 10
+    f_id = 6
 
-    f = project_import_manager.get_feature(f_id)
+    # f = project_import_manager.get_feature(f_id)
 
     f_mgf = project_import_manager.get_mgf_feature(f_id)
     f_gnps = project_import_manager.get_gnps_feature(f_id)
     f_sirius = project_import_manager.get_sirius_feature(f_id)
     f_meta = project_import_manager.get_metaboscape_feature(f_id)
 
+    f = FeatureCombined(feature_id=f_id, gnps=f_gnps)
+
+    f_comb = project_import_manager.get_feature(f_id)
     # import matplotlib.pyplot as plt
     # f_mgf.ms2.plot(); plt.show()
 
     # %%
     # res = write_table(project_import_manager)
 
+    from msIO.sql.session import initiate_db
+    db_file = 'database.db'
 
+    initiate_db(db_file)
+    # project_import_manager.to_sql(db_file, feature_ids=project_import_manager.feature_ids[:10])
+    project_import_manager.to_sql(db_file)

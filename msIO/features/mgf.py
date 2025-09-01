@@ -58,7 +58,7 @@ class MsSpec(SqlBaseClass, FeatureBaseClass):
     peaks_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
     peaks: Mapped[Optional["PeakList"]] = relationship()
 
-    feature_mgf_id: Mapped[int] = mapped_column(ForeignKey("feature_mgf.id"), nullable=False)
+    feature_mgf_id: Mapped[int] = mapped_column(ForeignKey("mgf_features.id"), nullable=False)
     feature_mgf: Mapped["FeatureMgf"] = relationship(back_populates="ms_specs")
 
 
@@ -72,7 +72,7 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     (when deconvolution fails or when multiple adducts are found).
     This object sets ambiguous parameters by choosing from the preferred ion
     order"""
-    __tablename__ = "feature_mgf"
+    __tablename__ = "mgf_features"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     feature_id: Mapped[Optional[int]] = None
@@ -97,6 +97,9 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     ms_specs: Mapped[list["MsSpec"]] = relationship(
         back_populates="feature_mgf", cascade="all, delete-orphan"
     )
+
+    combined_feature_id: Mapped[Optional[int]] = mapped_column(ForeignKey('features.id'))
+    combined_feature: Mapped[Optional["FeatureCombined"]] = relationship(back_populates='mgf')
 
     @classmethod
     def from_lines(cls, inpt: list[str]) -> Self:

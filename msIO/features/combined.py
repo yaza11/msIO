@@ -3,9 +3,12 @@ Module for combining information from MetaboScape, SIRIUS and GNPS exports.
 
 Each feature is associated with molecular properties, MS1, MS2, annotations, ...
 """
-from typing import Literal, Iterable
+from typing import Literal, Iterable, Optional
 
-from msIO.features.base import FeatureBaseClass
+from sqlalchemy import Integer, ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from msIO.features.base import FeatureBaseClass, SqlBaseClass
 from msIO.features.gnps import FeatureGnpsNode
 from msIO.features.metaboscape import FeatureMetaboScape
 from msIO.features.mgf import FeatureMgf
@@ -13,8 +16,19 @@ from msIO.features.sirius import FeatureSirius
 from msIO.list_of_ions.base import PeakList
 
 
-class FeatureCombined(FeatureBaseClass):
-    """Combine information from """
+class FeatureCombined(SqlBaseClass, FeatureBaseClass):
+    __tablename__ = "features"
+    id: Mapped[int] = mapped_column(primary_key=True)  # include only if not inherited
+    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    metaboscape: Mapped["FeatureMetaboScape"] = relationship(back_populates='combined_feature')
+    gnps: Mapped["FeatureGnpsNode"] = relationship(back_populates='combined_feature')
+    mgf: Mapped["FeatureMgf"] = relationship(back_populates='combined_feature')
+    sirius: Mapped["FeatureSirius"] = relationship(back_populates='combined_feature')
+
+
+class FeatureCombinedFlat(FeatureBaseClass):
+    """Combine information from features"""
 
     # sirius.mgf
     feature_id: int = None
@@ -94,7 +108,8 @@ class FeatureCombined(FeatureBaseClass):
         # TODO: SIRIUS should overwrite adduct and formula, rt_seconds should be from metaboscape
         features_dict = {}
         feature_types = ['metaboscape', 'mgf', 'gnps', 'sirius']
-        feature_names = [FeatureMetaboScape.__name__, FeatureMgf.__name__, FeatureGnpsNode.__name__, FeatureSirius.__name__]
+        feature_names = [FeatureMetaboScape.__name__, FeatureMgf.__name__, FeatureGnpsNode.__name__,
+                         FeatureSirius.__name__]
         feature_name_to_key = dict(zip(feature_names, feature_types))
         for feature in features:
             # find right key
@@ -112,21 +127,13 @@ class FeatureCombined(FeatureBaseClass):
 
         self.__dict__ |= attrs
 
+    @classmethod
+    def from_nested(cls, nested_feature):
+        ...
 
 
-
-
-def load_database(in_file: str) -> dict[int, FeatureCombined]:
+def load_database(in_file: str) -> dict[int, FeatureCombinedFlat]:
     ...
-
-
-class FeatureSelector:
-    """Quickly obtain all feature properties for a given feature ID"""
-    def __init__(self):
-        ...
-
-    def __call__(self, feature_id: ...):
-        ...
 
 
 if __name__ == '__main__':
@@ -139,4 +146,7 @@ if __name__ == '__main__':
     # gnps = GnpsImportManager(path_gnps_folder=path_gnps_folder)
     # sr = SiriusImportManager.from_export(path_folder_export=path_sirius_folder, export_tag='all')
 
+    f_gnps = FeatureGnpsNode(feature_id=1, cluster_label=2)
+    # f_gnps = FeatureGnpsNode()
 
+    f = FeatureCombined(gnps=f_gnps)
