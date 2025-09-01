@@ -51,7 +51,7 @@ class ProjectImportManager(FeatureManager):
 
     def _inner_missing_feature(self, f_id) -> None:
         features = {name: m.get_feature(f_id) for name, m in self.active_managers.items() if f_id in m.feature_ids}
-        f = FeatureCombined(**features)
+        f = FeatureCombined(feature_id=f_id, **features)
         self._features[f_id] = f
 
     def get_metaboscape_feature(self, f_id: int):
@@ -70,7 +70,7 @@ class ProjectImportManager(FeatureManager):
         assert 'sirius' in self.active_managers
         return self.active_managers['sirius'].get_feature(f_id)
 
-    def to_sql(self, db_file: str, feature_ids = None) -> None:
+    def to_sql(self, db_file: str, feature_ids=None) -> None:
         from msIO.sql.session import get_sessionmaker
 
         if feature_ids is None:
@@ -162,6 +162,7 @@ if __name__ == '__main__':
     # res = write_table(project_import_manager)
 
     from msIO.sql.session import initiate_db
+
     db_file = 'database.db'
 
     initiate_db(db_file)

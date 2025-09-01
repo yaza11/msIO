@@ -19,6 +19,7 @@ from msIO.list_of_ions.base import PeakList
 class FeatureCombined(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "features"
     id: Mapped[int] = mapped_column(primary_key=True)  # include only if not inherited
+    # TODO: this is redundant information, remove? might be good for convenience though
     feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     metaboscape: Mapped["FeatureMetaboScape"] = relationship(back_populates='combined_feature')

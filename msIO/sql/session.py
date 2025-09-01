@@ -21,7 +21,9 @@ def get_sessionmaker(db_file: str):
 
 def initiate_db(path_file):
     # after deleting the database, it has to be reinitialized
-    os.remove(path_file)
+    if os.path.exists(path_file):
+        os.remove(path_file)
+
     engine = get_engine(path_file)
     SqlBaseClass.metadata.create_all(engine)
 
