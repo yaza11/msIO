@@ -32,6 +32,7 @@ class FeatureManager:
         self._features = None
 
     def get_feature(self, feature_id: int) -> FeatureBaseClass:
+        feature_id = int(feature_id)  # need to convert e.g. numpy int to native int
         assert feature_id in self.feature_ids, f'found no feature of {self.__class__.__name__} with {feature_id=}'
         self._fetch_missing_features([feature_id])
         return self._features[feature_id]

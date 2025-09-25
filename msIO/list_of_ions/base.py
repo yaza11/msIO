@@ -19,6 +19,8 @@ class Peak(SqlBaseClass, FeatureBaseClass):
     mz: Mapped[float] = mapped_column(Float)
     rt: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    fwhm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    snr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"))
     peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")

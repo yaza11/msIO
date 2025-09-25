@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Optional
 
 import pandas as pd
 from sqlalchemy import Integer, Float, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from msIO.sample import Sample, Time, Location
 from msIO.features.base import FeatureBaseClass, SqlBaseClass
 
 METABOSCAPE_CSV_RENAME_COLUMNS: dict[str, str] = {
@@ -26,11 +28,13 @@ class Intensity(SqlBaseClass, FeatureBaseClass):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    sample_name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     feature_id: Mapped[int] = mapped_column(ForeignKey("metaboscape_features.id"), nullable=False)
     feature: Mapped["FeatureMetaboScape"] = relationship(back_populates="intensities")
+
+    sample_id: Mapped[int] = mapped_column(ForeignKey("samples.id", ondelete="CASCADE"), nullable=False)
+    sample: Mapped["Sample"] = relationship("Sample", back_populates="intensities")
 
 
 class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
@@ -59,8 +63,9 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     combined_feature: Mapped[Optional["FeatureCombined"]] = relationship(back_populates='metaboscape')
 
     @classmethod
-    def from_dataframe_row(cls, ser: pd.Series):
+    def from_dataframe_row(cls, ser: pd.Series, sample_name_to_sample: dict[str, Sample]):
         processed = {'intensities': []}
+
         for k, v in ser.items():
             if k.endswith('MaxIntensity') or k.endswith('MeanIntensity'):
                 continue
@@ -70,7 +75,9 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                 if isinstance(v, str):
                     v = float(v)
                 v = 0 if not (v > 0) else int(v)
-                processed['intensities'].append(Intensity(sample_name=k, value=v))
+                if k not in sample_name_to_sample:
+                    sample_name_to_sample[k] = Sample(sample_name=k)
+                processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v))
             else:
                 if k in METABOSCAPE_CSV_RENAME_COLUMNS.values():
                     k_new = k
@@ -87,6 +94,12 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     def formula(self):
         return self.formula_metaboscape
 
+    @cached_property
+    def mz(self):
+        """MetaboScape does not export mz values, so need to calculate mz from M and adduct (:"""
+        from LipidCalculator.adduct_parser.parser import get_mz_from_M_and_adduct
+        return get_mz_from_M_and_adduct(self.M, self.adduct)
+
     @property
     def adduct(self):
         return self.adduct_metaboscape
@@ -100,7 +113,7 @@ if __name__ == '__main__':
     df = pd.read_csv(path_file_csv)
     ser = df.iloc[0, :]
 
-    f = FeatureMetaboScape.from_dataframe_row(ser)
+    f = FeatureMetaboScape.from_dataframe_row(ser, {})
 
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session

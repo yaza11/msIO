@@ -6,6 +6,7 @@ from tqdm import tqdm
 
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.metaboscape import FeatureMetaboScape, METABOSCAPE_CSV_RENAME_COLUMNS
+from msIO.sample import Sample
 
 
 class MetaboscapeImportManager(FeatureManager):
@@ -20,13 +21,15 @@ class MetaboscapeImportManager(FeatureManager):
                 drop_cols.append(col)
         self._df: pd.DataFrame = _df.drop(columns=drop_cols)
 
+        self._sample_name_to_sample: dict[str, Sample] = {}
+
     @property
     def feature_ids(self):
         return self._df.feature_id.unique()
 
     def _inner_missing_feature(self, f_id) -> None:
         idx = np.argwhere(self._df.feature_id == f_id)[0][0]
-        f = FeatureMetaboScape.from_dataframe_row(self._df.iloc[idx, :])
+        f = FeatureMetaboScape.from_dataframe_row(self._df.iloc[idx, :], self._sample_name_to_sample)
         self._features[f_id] = f
 
 

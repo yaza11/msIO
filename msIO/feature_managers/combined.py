@@ -13,10 +13,11 @@ from msIO.feature_managers.gnps import GnpsImportManager
 from msIO.feature_managers.metaboscape import MetaboscapeImportManager
 from msIO.feature_managers.sirius import SiriusImportManager
 from msIO.features.base import SqlBaseClass
-from msIO.features.combined import FeatureCombined
+from msIO.features.combined import FeatureCombined, FeatureCombinedFlat
 
 
 class ProjectImportManager(FeatureManager):
+    """Object for creating a db file from import managers"""
     def __init__(
             self,
             metaboscape_manager: MetaboscapeImportManager = None,
@@ -97,7 +98,7 @@ def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFr
     f_ids = project_import_manager.feature_ids
 
     include_dtypes = [int, float, str]
-    for col, dtype in FeatureCombined.__annotations__.items():
+    for col, dtype in FeatureCombinedFlat.__annotations__.items():
         if col in columns:
             continue
         # exclude complex dtypes
@@ -142,29 +143,31 @@ if __name__ == '__main__':
                                                   sirius_manager=sr,
                                                   metaboscape_manager=metaboscape)
 
-    # %%
-    f_id = 6
+    res = write_table(project_import_manager)
 
-    # f = project_import_manager.get_feature(f_id)
-
-    f_mgf = project_import_manager.get_mgf_feature(f_id)
-    f_gnps = project_import_manager.get_gnps_feature(f_id)
-    f_sirius = project_import_manager.get_sirius_feature(f_id)
-    f_meta = project_import_manager.get_metaboscape_feature(f_id)
-
-    f = FeatureCombined(feature_id=f_id, gnps=f_gnps)
-
-    f_comb = project_import_manager.get_feature(f_id)
-    # import matplotlib.pyplot as plt
-    # f_mgf.ms2.plot(); plt.show()
-
-    # %%
-    # res = write_table(project_import_manager)
-
-    from msIO.sql.session import initiate_db
-
-    db_file = 'database.db'
-
-    initiate_db(db_file)
-    # project_import_manager.to_sql(db_file, feature_ids=project_import_manager.feature_ids[:10])
-    project_import_manager.to_sql(db_file)
+    # # %%
+    # f_id = 6
+    #
+    # # f = project_import_manager.get_feature(f_id)
+    #
+    # f_mgf = project_import_manager.get_mgf_feature(f_id)
+    # f_gnps = project_import_manager.get_gnps_feature(f_id)
+    # f_sirius = project_import_manager.get_sirius_feature(f_id)
+    # f_meta = project_import_manager.get_metaboscape_feature(f_id)
+    #
+    # f = FeatureCombined(feature_id=f_id, gnps=f_gnps)
+    #
+    # f_comb = project_import_manager.get_feature(f_id)
+    # # import matplotlib.pyplot as plt
+    # # f_mgf.ms2.plot(); plt.show()
+    #
+    # # %%
+    #
+    #
+    # from msIO.sql.session import initiate_db
+    #
+    # db_file = 'database.db'
+    #
+    # initiate_db(db_file)
+    # # project_import_manager.to_sql(db_file, feature_ids=project_import_manager.feature_ids[:10])
+    # project_import_manager.to_sql(db_file)
