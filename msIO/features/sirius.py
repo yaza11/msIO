@@ -117,12 +117,19 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
         # TODO: find better method to set default value
         self.use_zodiac_scoring_for_best = use_zodiac_scoring_for_best
 
+    @property
+    def best_formula(self) -> str:
+        return self.formula_candidates_by_rank[min(self.formula_candidates_by_rank)].formula_sirius
+
+    @property
     def formula_candidates_by_rank(self) -> dict[int, FormulaCandidate]:
         return {fc.formula_rank: fc for fc in self.formula_candidates if fc.formula_rank is not None}
 
+    @property
     def compound_candidates_by_formula(self) -> dict[str, CompoundCandidate]:
         return {cc.formula_sirius: cc for cc in self.compound_candidates if cc.formula_sirius}
 
+    @property
     def compound_groups_by_formula(self) -> dict[str, CompoundGroup]:
         return {cg.formula_sirius: cg for cg in self.compound_groups if cg.formula_sirius}
 

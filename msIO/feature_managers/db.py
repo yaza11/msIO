@@ -93,6 +93,38 @@ class FeatureManagerDB:
             objs = session.execute(stmt).scalars().all()
         return {o.feature_id: o.mz for o in objs}
 
+    def _get_dict_for_attributes(self, parent_obj, attr) -> dict:
+        vals = self._get_all_attributes_from(getattr(parent_obj, attr))
+        ids = self._get_all_attributes_from(getattr(parent_obj, 'feature_id'))
+        return dict(zip(ids, vals))
+
+    @property
+    def molecular_mass(self) -> dict[int, float]:
+        return self._get_dict_for_attributes(FeatureMetaboScape, 'M_metaboscape')
+
+    @property
+    def retention_times_in_seconds(self):
+        return self._get_dict_for_attributes(FeatureMetaboScape, 'rt_seconds')
+
+    @property
+    def collisional_cross_sections(self):
+        return self._get_dict_for_attributes(FeatureMetaboScape, 'CCS')
+
+    @property
+    def formula_metaboscape(self):
+        return self._get_dict_for_attributes(FeatureMetaboScape, 'formula_metaboscape')
+
+    @property
+    def formula_sirius(self):
+        stmt = (
+            select(FeatureSirius)
+        )
+
+        with self.session_maker() as session:
+            objs = session.execute(stmt).scalars().all()
+            formulas = {o.feature_id: o.best_formula for o in objs}
+        return formulas
+
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
@@ -112,3 +144,9 @@ if __name__ == '__main__':
 
     f_ids = dbm.feature_ids
     mzs = dbm.mzs
+    Ms = dbm.molecular_mass
+    RTs = dbm.retention_times_in_seconds
+    CCS = dbm.collisional_cross_sections
+    F_m = dbm.formula_metaboscape
+    F_s = dbm.formula_sirius
+
