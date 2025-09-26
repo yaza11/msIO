@@ -50,6 +50,8 @@ class Location(SqlBaseClass):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
     latitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     longitude: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     depth: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
