@@ -69,12 +69,15 @@ class Sample(SqlBaseClass):
     sample_code_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     is_blank: Mapped[bool] = mapped_column(Boolean, nullable=True)
+    tags: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     weight_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     weight_unit: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     volume_amount: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     volume_unit: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    concentration_percent: Mapped[Optional[float]] = mapped_column(Float, CheckConstraint("concentration_percent BETWEEN 0 AND 100"), nullable=True)
 
     location_id: Mapped[Optional[int]] = mapped_column(ForeignKey('locations.id'))
     location: Mapped[Optional["Location"]] = relationship(back_populates='sample')
