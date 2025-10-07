@@ -107,7 +107,7 @@ class FeatureManagerDB:
             missing_value=None,
             add_missing_values: bool = False
     ) -> dict[int, Any]:
-        d = self._get_dict_for_attributes(parent_obj, getattr(parent_obj, attr_name))
+        d = self._get_dict_for_attributes(parent_obj, attr_name)
         if add_missing_values:
             missing_features = set(self.feature_ids) - set(d.keys())
             for f in missing_features:
