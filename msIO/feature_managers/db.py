@@ -1,5 +1,7 @@
 from typing import Any
 
+from tqdm import tqdm
+
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import joinedload, load_only
 from sqlalchemy import select, inspect
@@ -138,7 +140,9 @@ class FeatureManagerDB:
 
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
-            formulas = {o.feature_id: o.best_formula for o in objs}
+            formulas = {}
+            for o in tqdm(objs, total=len(objs), desc='fetching sirius formulas'):
+                formulas[o.feature_id] = o.best_formula
         return formulas
 
     @property
@@ -152,7 +156,7 @@ class FeatureManagerDB:
         names = {}
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
-            for o in objs:
+            for o in tqdm(objs, total=len(objs), desc='fetching sirius names'):
                 candidates: dict = o.compound_candidates_by_formula
                 if o.best_formula not in candidates:
                     continue
@@ -188,3 +192,4 @@ if __name__ == '__main__':
 
     names = dbm.name_sirius
 
+    t = dbm.get_all_attributes_from(FeatureMetaboScape, 'M_metaboscape')
