@@ -139,7 +139,7 @@ class FeatureManagerDB:
             for o in objs:
                 candidates: dict = o.compound_candidates_by_formula
                 if o.best_formula not in candidates:
-                    names[o.feature_id] = None
+                    continue
                 else:
                     names[o.feature_id] = candidates[o.best_formula].name_sirius
         return names
