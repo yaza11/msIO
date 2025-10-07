@@ -127,21 +127,22 @@ class FeatureManagerDB:
 
     @property
     def name_sirius(self):
-        """"Returns dict mapping feature id to a sirius name based on the best formula. If there is no name for the
+        """
+        Returns dict mapping feature id to a sirius name based on the best formula. If there is no name for the
         highest scoring formula, None will be assigned to that feature."""
         stmt = (
             select(FeatureSirius)
         )
-
+        names = {}
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
-            names = {}
             for o in objs:
                 candidates: dict = o.compound_candidates_by_formula
                 if o.best_formula not in candidates:
                     continue
-                else:
-                    names[o.feature_id] = candidates[o.best_formula].name_sirius
+                if (name := candidates[o.best_formula].name_sirius) is None:
+                    continue
+                names[o.feature_id] = name
         return names
 
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
