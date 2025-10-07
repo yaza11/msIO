@@ -1,3 +1,5 @@
+from typing import Any
+
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import joinedload, load_only
 from sqlalchemy import select, inspect
@@ -97,6 +99,20 @@ class FeatureManagerDB:
         vals = self._get_all_attributes_from(getattr(parent_obj, attr))
         ids = self._get_all_attributes_from(getattr(parent_obj, 'feature_id'))
         return dict(zip(ids, vals))
+
+    def get_all_attributes_from(
+            self,
+            parent_obj,
+            attr_name: str,
+            missing_value=None,
+            add_missing_values: bool = False
+    ) -> dict[int, Any]:
+        d = self._get_dict_for_attributes(parent_obj, getattr(parent_obj, attr_name))
+        if add_missing_values:
+            missing_features = set(self.feature_ids) - set(d.keys())
+            for f in missing_features:
+                d[f] = missing_value
+        return d
 
     @property
     def molecular_mass(self) -> dict[int, float]:

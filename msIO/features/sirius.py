@@ -1,5 +1,3 @@
-from dataclasses import dataclass
-
 from typing import Optional, Self
 from sqlalchemy import ForeignKey, String, Float, Integer, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -7,7 +5,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 import numpy as np
 import pandas as pd
 
-from msIO.features.base import FeatureBaseClass, SqlBaseClass, CONVERTABLE_TYPES
+from msIO.features.base import FeatureBaseClass, SqlBaseClass
 
 
 class FormulaCandidate(SqlBaseClass, FeatureBaseClass):
