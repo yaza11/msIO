@@ -125,6 +125,25 @@ class FeatureManagerDB:
             formulas = {o.feature_id: o.best_formula for o in objs}
         return formulas
 
+    @property
+    def name_sirius(self):
+        """"Returns dict mapping feature id to a sirius name based on the best formula. If there is no name for the
+        highest scoring formula, None will be assigned to that feature."""
+        stmt = (
+            select(FeatureSirius)
+        )
+
+        with self.session_maker() as session:
+            objs = session.execute(stmt).scalars().all()
+            names = {}
+            for o in objs:
+                candidates: dict = o.compound_candidates_by_formula
+                if o.best_formula not in candidates:
+                    names[o.feature_id] = None
+                else:
+                    names[o.feature_id] = candidates[o.best_formula].name_sirius
+        return names
+
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
@@ -149,4 +168,6 @@ if __name__ == '__main__':
     CCS = dbm.collisional_cross_sections
     F_m = dbm.formula_metaboscape
     F_s = dbm.formula_sirius
+
+    names = dbm.name_sirius
 
