@@ -135,7 +135,7 @@ class FeatureManagerDB:
     @property
     def formula_sirius(self):
         stmt = (
-            select(FeatureSirius)
+            select(FeatureSirius).options(selectinload(FeatureSirius.formula_candidates))
         )
 
         with self.session_maker() as session:
@@ -152,6 +152,10 @@ class FeatureManagerDB:
         highest scoring formula, None will be assigned to that feature."""
         stmt = (
             select(FeatureSirius)
+            .options(
+                selectinload(FeatureSirius.formula_candidates),
+                selectinload(FeatureSirius.compound_candidates)
+            )
         )
         names = {}
         with self.session_maker() as session:
@@ -179,17 +183,17 @@ if __name__ == '__main__':
     #     f = session.query(FeatureCombined).filter(FeatureCombined.feature_id == 1).first()
     #     print(f.metaboscape.CCS)
 
-    f = dbm.get_feature(1)
-    print(f.metaboscape.M, f.metaboscape.adduct, f.metaboscape.mz)
-
-    f_ids = dbm.feature_ids
-    mzs = dbm.mzs
-    Ms = dbm.molecular_mass
-    RTs = dbm.retention_times_in_seconds
-    CCS = dbm.collisional_cross_sections
-    F_m = dbm.formula_metaboscape
-    F_s = dbm.formula_sirius
+    # f = dbm.get_feature(1)
+    # print(f.metaboscape.M, f.metaboscape.adduct, f.metaboscape.mz)
+    #
+    # f_ids = dbm.feature_ids
+    # mzs = dbm.mzs
+    # Ms = dbm.molecular_mass
+    # RTs = dbm.retention_times_in_seconds
+    # CCS = dbm.collisional_cross_sections
+    # F_m = dbm.formula_metaboscape
+    # F_s = dbm.formula_sirius
 
     names = dbm.name_sirius
 
-    t = dbm.get_all_attributes_from(FeatureMetaboScape, 'M_metaboscape')
+    # t = dbm.get_all_attributes_from(FeatureMetaboScape, 'M_metaboscape')
