@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload, joinedload, Load
 from msIO.features.gnps import FeatureGnpsNode
 from msIO.features.metaboscape import FeatureMetaboScape
 from msIO.features.mgf import FeatureMgf
-from msIO.features.sirius import FeatureSirius
+from msIO.features.sirius import FeatureSirius, CompoundCandidate, FormulaCandidate
 from msIO.features.base import SqlBaseClass
 from msIO.features.combined import FeatureCombined
 
@@ -135,14 +135,14 @@ class FeatureManagerDB:
     @property
     def formula_sirius(self):
         stmt = (
-            select(FeatureSirius).options(selectinload(FeatureSirius.formula_candidates))
+            select(FormulaCandidate).filter(FormulaCandidate.formula_rank == 1)
         )
 
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
             formulas = {}
-            for o in tqdm(objs, total=len(objs), desc='fetching sirius formulas'):
-                formulas[o.feature_id] = o.best_formula
+            for o in objs:
+                formulas[o.feature_id] = o.formula_sirius
         return formulas
 
     @property
@@ -151,22 +151,13 @@ class FeatureManagerDB:
         Returns dict mapping feature id to a sirius name based on the best formula. If there is no name for the
         highest scoring formula, None will be assigned to that feature."""
         stmt = (
-            select(FeatureSirius)
-            .options(
-                selectinload(FeatureSirius.formula_candidates),
-                selectinload(FeatureSirius.compound_candidates)
-            )
+            select(CompoundCandidate).filter(CompoundCandidate.formula_rank == 1)
         )
         names = {}
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
-            for o in tqdm(objs, total=len(objs), desc='fetching sirius names'):
-                candidates: dict = o.compound_candidates_by_formula
-                if o.best_formula not in candidates:
-                    continue
-                if (name := candidates[o.best_formula].name_sirius) is None:
-                    continue
-                names[o.feature_id] = name
+            for o in objs:
+                names[o.feature_id] = o.name_sirius
         return names
 
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
@@ -192,8 +183,8 @@ if __name__ == '__main__':
     # RTs = dbm.retention_times_in_seconds
     # CCS = dbm.collisional_cross_sections
     # F_m = dbm.formula_metaboscape
-    # F_s = dbm.formula_sirius
+    F_s = dbm.formula_sirius
 
-    names = dbm.name_sirius
+    # names = dbm.name_sirius
 
     # t = dbm.get_all_attributes_from(FeatureMetaboScape, 'M_metaboscape')
