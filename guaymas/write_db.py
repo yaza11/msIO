@@ -1,3 +1,4 @@
+"""this now lives in the Guaymas project"""
 from msIO import MgfImportManager
 from guaymas.paths import path_metaboscape_csv, path_mgf_sirius, \
     path_sirius_folder, db_file, path_gnps_folder

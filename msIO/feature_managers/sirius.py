@@ -121,15 +121,14 @@ class SiriusImportManager(FeatureManager):
 
         self._tables: dict[str, pd.DataFrame] = {
             name: pd.read_csv(
-                os.path.join(self.path_folder_export, file), sep='\t'
+                path_file, sep='\t'
             )
-            for name, file in zip(SIRIUS_FILE_NAMES, files)
+            for name, file in zip(SIRIUS_FILE_NAMES, files) if os.path.exists(path_file := os.path.join(self.path_folder_export, file))
         }
 
-        renamers = [RENAME_FORMULA_IDENTIFICATIONS,
-                    RENAME_COMPOUND_IDENTIFICATIONS,
-                    RENAME_CANOPUS_FORMULA_SUMMARY]
-        for n, renamer in zip(SIRIUS_FILE_NAMES, renamers):
+        renamers = dict(zip(SIRIUS_FILE_NAMES, [RENAME_FORMULA_IDENTIFICATIONS, RENAME_COMPOUND_IDENTIFICATIONS, RENAME_CANOPUS_FORMULA_SUMMARY]))
+        for n in self._tables:
+            renamer = renamers[n]
             process_with_rename(n, renamer)
 
     def _inner_missing_feature(self, f_id) -> None:
@@ -138,8 +137,10 @@ class SiriusImportManager(FeatureManager):
 
 
 if __name__ == '__main__':
+    from msIO.features.combined import FeatureCombined
     # path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
-    path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
+    # path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
+    path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B\SIRIUS'
 
     # test_folder_1 = os.path.join(path_test_folder, '1_timsTOF_combined_re.sirius_1')
     # props = read_compound_info(test_folder_1)

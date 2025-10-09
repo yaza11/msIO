@@ -137,24 +137,28 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
             mask = df.feature_id == feature_id
             return df.loc[mask, :]
 
+
         formula_candidates = []
-        sub_df = select_rows_by_feature(tables['formula_identifications'])
-        for _, row in sub_df.iterrows():
-            f = FormulaCandidate(**row.to_dict())
-            formula_candidates.append(f)
+        if 'formula_identifications' in tables:
+            sub_df = select_rows_by_feature(tables['formula_identifications'])
+            for _, row in sub_df.iterrows():
+                f = FormulaCandidate(**row.to_dict())
+                formula_candidates.append(f)
 
         compound_candidates = []
-        sub_df = select_rows_by_feature(tables['compound_identifications'])
-        for _, row in sub_df.iterrows():
-            f = CompoundCandidate(**row.to_dict())
-            compound_candidates.append(f)
+        if 'compound_identifications' in tables:
+            sub_df = select_rows_by_feature(tables['compound_identifications'])
+            for _, row in sub_df.iterrows():
+                f = CompoundCandidate(**row.to_dict())
+                compound_candidates.append(f)
         # TODO: fill nan values, where possible
 
         compound_groups = []
-        sub_df = select_rows_by_feature(tables['canopus_formula_summary'])
-        for _, row in sub_df.iterrows():
-            f = CompoundGroup(**row.to_dict())
-            compound_groups.append(f)
+        if 'canopus_formula_summary' not in tables:
+            sub_df = select_rows_by_feature(tables['canopus_formula_summary'])
+            for _, row in sub_df.iterrows():
+                f = CompoundGroup(**row.to_dict())
+                compound_groups.append(f)
 
         return cls(feature_id=feature_id,
                    formula_candidates=formula_candidates,
