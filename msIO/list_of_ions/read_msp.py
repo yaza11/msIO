@@ -2,8 +2,9 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from .base import BaseLib, PeakList
-
+from msIO.environmental.location import Location
+from msIO.features.combined import FeatureCombined
+from msIO.list_of_ions.base import BaseLib, PeakList
 
 msp_key_to_py: dict[str, str] = {
     'NAME': 'name',
@@ -17,6 +18,7 @@ msp_key_to_py: dict[str, str] = {
     'INCHIKEY': 'inchikey',
     'IONIZATION': 'ionization_method',
     'INSTRUMENTTYPE': 'instrument_type',
+    'INSTRUMENTYPE': 'instrument_type',
     'INSTRUMENT': 'instrument_type',
     'SMILES': 'smiles',
     'RETENTIONTIME': 'rt_minutes',
@@ -74,9 +76,9 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
 
 
 class MSPReader(BaseLib):
-    def __init__(self, path_lib):
+    def __init__(self, path_lib, splitter_peaks_list='\t'):
         entries = {}
-        self.peak_lists: dict[int, dict] = {}
+        self.peak_lists: dict[int, PeakList] = {}
         with open(path_lib, 'r') as f:
             lines = []
             for i, l in tqdm(enumerate(f)):
@@ -84,13 +86,14 @@ class MSPReader(BaseLib):
                 if l == '\n':
                     entries[i] = _parse_lines(lines)
                     self.peak_lists[i] = PeakList.from_lines(
-                        lines, splitter='\t')
+                        lines, splitter=splitter_peaks_list)
                     lines = []
 
         self.df_features: pd.DataFrame = pd.DataFrame.from_dict(
             entries, orient='index')
         self.df_features.loc[:, 'ms_level'] = 2
-        self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
+        if 'rt_minutes' in self.df_features.columns:
+            self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
 
     def get_ms2(
             self,
@@ -121,6 +124,10 @@ def composition_msdial(msdial):
 
 
 if __name__ == '__main__':
-    path_lib = r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
-    MSDialLib = MSPReader(path_lib)
-    s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
+    # path_lib = r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
+    # MSDialLib = MSPReader(path_lib)
+    # s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
+
+    path_file = '\\\\hlabstorage.dmz.marum.de\\scratch\\Yannick\\compounds\\1G-AEG_pos.msp'
+
+    rdr = MSPReader(path_file, splitter_peaks_list=' ')

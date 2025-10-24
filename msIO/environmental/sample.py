@@ -1,10 +1,11 @@
 from typing import Optional
 
+
 from sqlalchemy import String, Float, CheckConstraint, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from msIO.features.base import SqlBaseClass
-
+from msIO.general import TimeStamp
 
 class Sample(SqlBaseClass):
     __tablename__ = "samples"
@@ -38,15 +39,10 @@ class Sample(SqlBaseClass):
 
     # one to one
     time_id: Mapped[Optional[int]] = mapped_column(ForeignKey('times.id'))
-    time: Mapped[Optional["Time"]] = relationship(back_populates='sample')
+    time: Mapped[Optional["TimeStamp"]] = relationship(back_populates='sample')
 
     intensities: Mapped[list["Intensity"]] = relationship("Intensity",
                                                           back_populates="sample",
                                                           cascade="all, delete-orphan",
                                                           passive_deletes=True)
 
-    # possible belongs to multiple measurements
-    measurements: Mapped[list["Measurement"]] = relationship('Measurement',
-                                                             back_populates="samples",
-                                                             cascade="all, delete-orphan",
-                                                             passive_deletes=True)

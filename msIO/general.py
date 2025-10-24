@@ -6,7 +6,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from msIO.features.base import SqlBaseClass
 
 
-class Time(SqlBaseClass):
+class TimeStamp(SqlBaseClass):
     __tablename__ = "times"
 
     id: Mapped[int] = mapped_column(primary_key=True)

@@ -100,7 +100,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
         mzs = []
         ints = []
         for line in lines_peaks:
-            mz, i = line.split(splitter)
+            mz, i = line.split(splitter)[:2]
             mzs.append(float(mz))
             ints.append(float(i))
 
