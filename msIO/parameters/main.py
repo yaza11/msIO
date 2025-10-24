@@ -13,6 +13,19 @@ class Parameter:
         ...
 
 
+class PhysicalQuantity:
+    name: str
+    unit: str
+
+    nominal_value: float
+    uncertainty_absolute: float
+    uncertainty_relative: float
+
+    min_possible_value: float
+    max_possible_value: float
+
+
+# TODO: define common parameters
 rt = Parameter()
 mz = Parameter()
 mob = Parameter()

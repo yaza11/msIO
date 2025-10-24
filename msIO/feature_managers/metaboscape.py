@@ -1,12 +1,9 @@
-from typing import Iterable
-
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
 
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.metaboscape import FeatureMetaboScape, METABOSCAPE_CSV_RENAME_COLUMNS
-from msIO.sample import Sample
+from msIO.environmental.sample import Sample
 
 
 class MetaboscapeImportManager(FeatureManager):

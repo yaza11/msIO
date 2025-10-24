@@ -7,6 +7,7 @@ from .base import BaseLib, PeakList
 
 msp_key_to_py: dict[str, str] = {
     'NAME': 'name',
+    'Name': 'name',
     'MW': 'mz',
     'PRECURSORMZ': 'mz',
     'PRECURSORTYPE': 'ion',

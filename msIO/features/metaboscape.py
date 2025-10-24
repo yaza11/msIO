@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from functools import cached_property
 from typing import Optional
 
@@ -6,7 +5,7 @@ import pandas as pd
 from sqlalchemy import Integer, Float, String, ForeignKey
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from msIO.sample import Sample, Time, Location
+from msIO.environmental.sample import Sample
 from msIO.features.base import FeatureBaseClass, SqlBaseClass
 
 METABOSCAPE_CSV_RENAME_COLUMNS: dict[str, str] = {
@@ -69,7 +68,8 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
         for k, v in ser.items():
             if k.endswith('MaxIntensity') or k.endswith('MeanIntensity'):
                 continue
-            if (k not in METABOSCAPE_CSV_RENAME_COLUMNS.keys()) and (k not in METABOSCAPE_CSV_RENAME_COLUMNS.values()):
+            if ((k not in METABOSCAPE_CSV_RENAME_COLUMNS.keys())
+                    and (k not in METABOSCAPE_CSV_RENAME_COLUMNS.values())):
                 # print(f'column "{k}" could not be converted, assuming it contains intensities')
                 # set nan values to 0
                 if isinstance(v, str):
