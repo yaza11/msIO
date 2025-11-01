@@ -27,6 +27,10 @@ class CompoundGroup(SqlBaseClassComp):
     name: Mapped[str] = mapped_column(String, nullable=False)
     abbreviation: Mapped[str | None] = mapped_column(String, nullable=True)
 
+    molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
+                                                       nullable=True)
+    molecule: Mapped[Optional["Molecule"]] = relationship()
+
     compounds: Mapped[List['Compound']] = relationship(
         secondary=compound_group_to_compound_association_table,
         back_populates="compound_groups"
@@ -54,14 +58,10 @@ class Compound(SqlBaseClassComp):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
 
-    smiles: Mapped[str | None] = mapped_column(String, nullable=True)
-    inchi: Mapped[str | None] = mapped_column(String, nullable=True)
-    inchkey: Mapped[str | None] = mapped_column(String, nullable=True)
-    formula: Mapped[str | None] = mapped_column(String, nullable=True)
-
-    rt: Mapped[float | None] = mapped_column(Float, nullable=True)
-    mz: Mapped[float | None] = mapped_column(Float, nullable=True)
-    ccs: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # many to one
+    molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
+                                                       nullable=True)
+    molecule: Mapped[Optional["Molecule"]] = relationship()
 
     # Relationship: Compound → IonPeak
     ions: Mapped[List["IonPeak"]] = relationship(
@@ -72,6 +72,20 @@ class Compound(SqlBaseClassComp):
         secondary=compound_group_to_compound_association_table,
         back_populates="compounds"
     )
+
+
+class Molecule(SqlBaseClassComp):
+    __tablename__ = "molecule"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    smiles: Mapped[str | None] = mapped_column(String, nullable=True)
+    inchi: Mapped[str | None] = mapped_column(String, nullable=True)
+    inchkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    formula: Mapped[str | None] = mapped_column(String, nullable=True)
+    M: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    charge: Mapped[int | None] = mapped_column(Float, nullable=True)
 
 
 class IonPeak(SqlBaseClassComp, PeakBaseClass):
@@ -90,6 +104,11 @@ class IonPeak(SqlBaseClassComp, PeakBaseClass):
         back_populates="ion_peak", cascade="all, delete-orphan"
     )
 
+    # many to one
+    molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
+                                                       nullable=True)
+    molecule: Mapped[Optional["Molecule"]] = relationship()
+
 
 class IsotopePeak(SqlBaseClassComp, PeakBaseClass):
     __tablename__ = "isotope_peak"
@@ -107,16 +126,28 @@ class IsotopePeak(SqlBaseClassComp, PeakBaseClass):
         back_populates="isotope_peak", cascade="all, delete-orphan"
     )
 
+    # many to one
+    molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
+                                                       nullable=True)
+    molecule: Mapped[Optional["Molecule"]] = relationship()
+
 
 class FragmentPeak(SqlBaseClassComp, PeakBaseClass):
     __tablename__ = "fragment_peak"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    isotope_peak_id: Mapped[int] = mapped_column(ForeignKey("isotope_peak.id"), nullable=False)
 
-    is_fragment: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_fragment: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    is_neutral_loss: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
 
+    isotope_peak_id: Mapped[int | None] = mapped_column(
+        ForeignKey("isotope_peak.id"), nullable=False)
     isotope_peak: Mapped["IsotopePeak"] = relationship(back_populates="fragments")
+
+    # many to one
+    molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
+                                                       nullable=True)
+    molecule: Mapped[Optional["Molecule"]] = relationship()
 
 
 def test():
@@ -132,12 +163,13 @@ def test():
         ipl = CompoundGroup(name='intact polar lipids', abbreviation='IPL')
         head_1g = CompoundGroup(name='head', abbreviation='1G', parent=ipl)
 
+        mol = Molecule(
+            formula="C10H20O",
+        )
+
         cmp = Compound(
             name="TestCompound",
-            formula="C10H20O",
-            rt=5.5,
-            mz=250.13,
-            ccs=150.0
+            molecule=mol
         )
 
         cmp.compound_groups.append(ipl)
@@ -185,7 +217,7 @@ def test():
     with Session(engine) as session:
         compounds = session.query(Compound).all()
         for c in compounds:
-            print(f"Compound: {c.name}, formula={c.formula}")
+            print(f"Compound: {c.name}, molecule={c.molecule}")
             for ion in c.ions:
                 print(f"  IonPeak: mz={ion.mz}, adduct={ion.adduct}")
                 for iso in ion.isotopes:
