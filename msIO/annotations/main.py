@@ -56,7 +56,7 @@ class Compound(SqlBaseClassComp):
     __tablename__ = "compound"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
 
     # many to one
     molecule_id: Mapped[Optional[int]] = mapped_column(ForeignKey("molecule.id"),
@@ -77,6 +77,7 @@ class Compound(SqlBaseClassComp):
 class Molecule(SqlBaseClassComp):
     __tablename__ = "molecule"
 
+    # TODO: use inchkey as index instead
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     smiles: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -180,7 +181,6 @@ def test():
             rt=5.5,
             intensity=1000.0,
             adduct="[M+H]+",
-            adduct_type="protonated",
             is_ion=True
         )
 
@@ -200,7 +200,6 @@ def test():
 
         # Create FragmentPeak
         frag = FragmentPeak(
-            mz=150.07,
             rt=5.6,
             intensity=200.0,
             is_fragment=True
