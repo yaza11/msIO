@@ -1,7 +1,7 @@
 """Keep this separated from main database for now"""
 from typing import Optional, List
 
-from sqlalchemy import Integer, String, ForeignKey, Boolean, Float, create_engine
+from sqlalchemy import Integer, String, ForeignKey, Boolean, Float, create_engine, Table, Column
 from sqlalchemy.orm import Mapped, relationship, mapped_column, Session
 from sqlalchemy.orm import DeclarativeBase
 
@@ -12,8 +12,40 @@ class SqlBaseClassComp(DeclarativeBase):
     pass
 
 
-class CompoundGroup:
-    name: str
+compound_group_to_compound_association_table = Table(
+    "association_table",
+    SqlBaseClassComp.metadata,
+    Column("compound_group_id", ForeignKey("compound_group.id")),
+    Column("compound_id", ForeignKey("compound.id")),
+)
+
+
+class CompoundGroup(SqlBaseClassComp):
+    __tablename__ = "compound_group"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    abbreviation: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    compounds: Mapped[List['Compound']] = relationship(
+        secondary=compound_group_to_compound_association_table,
+        back_populates="compound_groups"
+    )
+
+    # --- Self-referential FK for parent group ---
+    parent_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("compound_group.id"), nullable=True)
+
+    # --- Relationships for hierarchy ---
+    parent: Mapped[Optional["CompoundGroup"]] = relationship(
+        remote_side="CompoundGroup.id",  # resolves circular relationship
+        back_populates="children"
+    )
+
+    children: Mapped[List["CompoundGroup"]] = relationship(
+        back_populates="parent",
+        cascade="all, delete-orphan"
+    )
 
 
 class Compound(SqlBaseClassComp):
@@ -22,18 +54,23 @@ class Compound(SqlBaseClassComp):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String, unique=True, nullable=False)
 
-    smiles: Mapped[Optional[str]] = mapped_column(String)
-    inchi: Mapped[Optional[str]] = mapped_column(String)
-    inchkey: Mapped[Optional[str]] = mapped_column(String)
-    formula: Mapped[Optional[str]] = mapped_column(String)
+    smiles: Mapped[str | None] = mapped_column(String, nullable=True)
+    inchi: Mapped[str | None] = mapped_column(String, nullable=True)
+    inchkey: Mapped[str | None] = mapped_column(String, nullable=True)
+    formula: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    rt: Mapped[Optional[float]] = mapped_column(Float)
-    mz: Mapped[Optional[float]] = mapped_column(Float)
-    ccs: Mapped[Optional[float]] = mapped_column(Float)
+    rt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mz: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ccs: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     # Relationship: Compound → IonPeak
     ions: Mapped[List["IonPeak"]] = relationship(
         back_populates="compound", cascade="all, delete-orphan"
+    )
+
+    compound_groups: Mapped[List["CompoundGroup"]] = relationship(
+        secondary=compound_group_to_compound_association_table,
+        back_populates="compounds"
     )
 
 
@@ -52,6 +89,7 @@ class IonPeak(SqlBaseClassComp, PeakBaseClass):
     isotopes: Mapped[List["IsotopePeak"]] = relationship(
         back_populates="ion_peak", cascade="all, delete-orphan"
     )
+
 
 class IsotopePeak(SqlBaseClassComp, PeakBaseClass):
     __tablename__ = "isotope_peak"
@@ -91,6 +129,9 @@ def test():
     # --- TEST INSERTION ---
     with Session(engine) as session:
         # Create a Compound
+        ipl = CompoundGroup(name='intact polar lipids', abbreviation='IPL')
+        head_1g = CompoundGroup(name='head', abbreviation='1G', parent=ipl)
+
         cmp = Compound(
             name="TestCompound",
             formula="C10H20O",
@@ -98,6 +139,9 @@ def test():
             mz=250.13,
             ccs=150.0
         )
+
+        cmp.compound_groups.append(ipl)
+        cmp.compound_groups.append(head_1g)
 
         # Create IonPeak
         ion = IonPeak(
