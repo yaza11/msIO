@@ -94,7 +94,6 @@ class IonPeak(SqlBaseClassComp, PeakBaseClass):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     compound_id: Mapped[int] = mapped_column(ForeignKey("compound.id"), nullable=False)
 
-    adduct_type: Mapped[Optional[str]] = mapped_column(String)
     is_ion: Mapped[bool] = mapped_column(Boolean, default=True)
 
     compound: Mapped["Compound"] = relationship(back_populates="ions")
