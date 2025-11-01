@@ -8,6 +8,7 @@ class PeakBaseClass(FeatureBaseClass):
     id: Mapped[int] = mapped_column(primary_key=True)
     mz: Mapped[float] = mapped_column(Float)
     rt: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ccs: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     intensity: Mapped[float | None] = mapped_column(Float, nullable=True)
     height: Mapped[float | None] = mapped_column(Float, nullable=True)
