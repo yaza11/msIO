@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='msIO',
-    version='0.0.22',
+    version='0.0.23',
     url='',
     author='Yannick Zander',
     author_email='yannick.zander@gmail.com',

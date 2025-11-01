@@ -6,7 +6,7 @@ from msIO.features.base import FeatureBaseClass
 
 class PeakBaseClass(FeatureBaseClass):
     id: Mapped[int] = mapped_column(primary_key=True)
-    mz: Mapped[float | None] = mapped_column(Float)
+    mz: Mapped[float | None] = mapped_column(Float, nullable=True)
     rt: Mapped[float | None] = mapped_column(Float, nullable=True)
     ccs: Mapped[float | None] = mapped_column(Float, nullable=True)
 
