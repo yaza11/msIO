@@ -37,9 +37,14 @@ class MgfImportManager(BaseLib, FeatureManager):
         header = []
         entries: list[dict] = []
         is_ion: bool = False  # could contain header
+
+        # get line count
+        with open(path_mgf, 'rb') as f:
+            n_lines = sum(1 for _ in f)
+
         with open(path_mgf, 'r') as f:
             lines_ion = []
-            for line in tqdm(f, desc='reading mgf file'):
+            for line in tqdm(f, desc='reading mgf file', total=n_lines):
                 if line.startswith('BEGIN IONS'):
                     is_ion = True
                 elif line.startswith('END IONS'):
