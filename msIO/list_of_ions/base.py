@@ -1,29 +1,32 @@
 import warnings
-from dataclasses import dataclass
 from typing import Self, Iterable, Optional, Union
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from sqlalchemy import Float, ForeignKey, String
+from sqlalchemy import ForeignKey, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from enum import Enum as PyEnum
+from sqlalchemy import Enum
 
 from msIO.features.base import SqlBaseClass, FeatureBaseClass
 
 
-@dataclass
-class Peak(SqlBaseClass, FeatureBaseClass):
+class SpectrumType(PyEnum):
+    retention_time = "retention_time"
+    mobility = "mobility"
+    mass_over_charge = "mass_over_charge"
+    mass_over_charge_isotopes = "mass_over_charge_isotopes"
+    mass_over_charge_fragments = "mass_over_charge_fragments"
+
+
+class PeakFeature(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "peak"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    mz: Mapped[float] = mapped_column(Float)
-    rt: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    intensity: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    fwhm: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    snr: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
     peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"))
-    peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")
+    peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")  # every peak is part of a peak list
 
 
 class PeakList(SqlBaseClass, FeatureBaseClass):
@@ -33,7 +36,12 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
-    peaks: Mapped[list["Peak"]] = relationship(
+    spectrum_type: Mapped[SpectrumType | None] = mapped_column(
+        Enum(SpectrumType, name='spectrum_type_enum'),
+        nullable=True
+    )
+
+    peaks: Mapped[list["PeakFeature"]] = relationship(
         back_populates="peak_list",
         cascade="all, delete-orphan"
     )
@@ -42,7 +50,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             self,
             mzs: Optional[Iterable[float]] = None,
             intensities: Optional[Iterable[float]] = None,
-            peaks: Optional[Union[dict[float, float], Iterable[Peak]]] = None,
+            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None,
             name: Optional[str] = None
     ) -> None:
         self.name = name
@@ -52,8 +60,8 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             self,
             mzs: Optional[Iterable[float]] = None,
             intensities: Optional[Iterable[float]] = None,
-            peaks: Optional[Union[dict[float, float], Iterable[Peak]]] = None
-    ) -> list[Peak]:
+            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None
+    ) -> list[PeakFeature]:
         if (mzs is None) and (intensities is None) and (peaks is None):
             return []
 
@@ -62,15 +70,15 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             assert len(mzs) == len(intensities)
             peaks = []
             for mz, i in zip(mzs, intensities):
-                peaks.append(Peak(mz=mz, intensity=i))
-            return [Peak(mz=p.mz, intensity=p.intensity, peak_list=self) for p in peaks]
+                peaks.append(PeakFeature(mz=mz, intensity=i))
+            return [PeakFeature(mz=p.mz, intensity=p.intensity, peak_list=self) for p in peaks]
 
         assert (mzs is None) and (intensities is None), 'provide either peaks OR (mzs AND intensities)'
         if isinstance(peaks, dict):
-            return [Peak(mz=k, intensity=v, peak_list=self) for k, v in peaks.items()]
+            return [PeakFeature(mz=k, intensity=v, peak_list=self) for k, v in peaks.items()]
         return [p
                 if p.peak_list is self
-                else Peak(mz=p.mz, intensity=p.intensity, peak_list=self)
+                else PeakFeature(mz=p.mz, intensity=p.intensity, peak_list=self)
                 for p in peaks]
 
     @property
@@ -88,7 +96,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             mz = p.mz
             i = p.intensity
             if mz not in mzs:
-                new_peaks.append(Peak(mz=mz, intensity=0.))
+                new_peaks.append(PeakFeature(mz=mz, intensity=0.))
             idx = mzs.index(mz)
             new_peaks[idx].intensity += i
         return self.__class__(peaks=new_peaks)
@@ -189,6 +197,6 @@ class BaseLib:
 
 
 if __name__ == '__main__':
-    peak = Peak(mz=100, intensity=10)
+    peak = PeakFeature(mz=100, intensity=10)
 
     pl = PeakList(mzs=[1, 2, 3], intensities=[3, 4, 5])
