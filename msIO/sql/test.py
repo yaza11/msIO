@@ -3,7 +3,7 @@ from sqlalchemy import select, or_
 from msIO import PeakList
 from msIO.features.base import SqlBaseClass
 from msIO.features.mgf import MsSpec, FeatureMgf
-from msIO.list_of_ions.base import Peak
+from msIO.list_of_ions.base import PeakFeature
 from msIO.sql.session import get_sessionmaker, get_engine
 
 # import objects to ensure they are in the session
@@ -60,11 +60,10 @@ stmt = (
     .join(FeatureMgf.ms_specs)
     .join(PeakList, MsSpec.peaks_id == PeakList.id)
     .join(PeakList.peaks)
-    .filter(Peak.mz.between(fragment_target_mass - tol,
-                            fragment_target_mass + tol))
+    .filter(PeakFeature.mz.between(fragment_target_mass - tol,
+                                   fragment_target_mass + tol))
     .distinct()
 )
 
 with Session() as session:
     res = session.scalars(stmt).all()
-
