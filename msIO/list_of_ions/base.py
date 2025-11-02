@@ -21,7 +21,7 @@ class SpectrumType(PyEnum):
     mass_over_charge_fragments = "mass_over_charge_fragments"
 
 
-class PeakFeature(SqlBaseClass, FeatureBaseClass, PeakBaseClass):
+class PeakFeature(SqlBaseClass, PeakBaseClass):
     __tablename__ = "peak"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -201,3 +201,5 @@ if __name__ == '__main__':
     peak = PeakFeature(mz=100, intensity=10)
 
     pl = PeakList(mzs=[1, 2, 3], intensities=[3, 4, 5])
+
+    pl.peaks.append(peak)
