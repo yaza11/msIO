@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum as PyEnum
 from sqlalchemy import Enum
 
+from msIO.core import PeakBaseClass
 from msIO.features.base import SqlBaseClass, FeatureBaseClass
 
 
@@ -20,7 +21,7 @@ class SpectrumType(PyEnum):
     mass_over_charge_fragments = "mass_over_charge_fragments"
 
 
-class PeakFeature(SqlBaseClass, FeatureBaseClass):
+class PeakFeature(SqlBaseClass, FeatureBaseClass, PeakBaseClass):
     __tablename__ = "peak"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
