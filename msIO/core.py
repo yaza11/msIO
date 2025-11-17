@@ -10,6 +10,9 @@ class PeakBaseClass(FeatureBaseClass):
     rt: Mapped[float | None] = mapped_column(Float, nullable=True)
     ccs: Mapped[float | None] = mapped_column(Float, nullable=True)
 
+    annotation: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # TODO: deprecate intensity
     intensity: Mapped[float | None] = mapped_column(Float, nullable=True)
     height: Mapped[float | None] = mapped_column(Float, nullable=True)
     area: Mapped[float | None] = mapped_column(Float, nullable=True)

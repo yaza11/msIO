@@ -78,14 +78,18 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
 class MSPReader(BaseLib):
     def __init__(self, path_lib, splitter_peaks_list='\t'):
         entries = {}
-        self.peak_lists: dict[int, PeakList] = {}
+        self.peak_list: dict[int, PeakList] = {}
+
+        with open(path_lib, 'rb') as f:
+            n_lines = sum(1 for _ in f)
+
         with open(path_lib, 'r') as f:
             lines = []
-            for i, l in tqdm(enumerate(f)):
+            for i, l in tqdm(enumerate(f), total=n_lines, desc='parsing msp file'):
                 lines.append(l)
                 if l == '\n':
                     entries[i] = _parse_lines(lines)
-                    self.peak_lists[i] = PeakList.from_lines(
+                    self.peak_list[i] = PeakList.from_lines(
                         lines, splitter=splitter_peaks_list)
                     lines = []
 
@@ -128,6 +132,6 @@ if __name__ == '__main__':
     # MSDialLib = MSPReader(path_lib)
     # s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
 
-    path_file = '\\\\hlabstorage.dmz.marum.de\\scratch\\Yannick\\compounds\\1G-AEG_pos.msp'
+    path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
 
     rdr = MSPReader(path_file, splitter_peaks_list=' ')

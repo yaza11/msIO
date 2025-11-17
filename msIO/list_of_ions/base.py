@@ -51,28 +51,33 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             self,
             mzs: Optional[Iterable[float]] = None,
             intensities: Optional[Iterable[float]] = None,
+            annotations: Optional[Iterable[float]] = None,
             peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None,
             name: Optional[str] = None
     ) -> None:
         self.name = name
-        self.peaks = self._build_peaks(mzs, intensities, peaks)
+        self.peaks = self._build_peaks(mzs, intensities, annotations, peaks)
 
     def _build_peaks(
             self,
-            mzs: Optional[Iterable[float]] = None,
-            intensities: Optional[Iterable[float]] = None,
-            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None
+            mzs: Optional[Iterable[float]],
+            intensities: Optional[Iterable[float]],
+            annotations: Optional[Iterable[str]],
+            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]]
     ) -> list[PeakFeature]:
         if (mzs is None) and (intensities is None) and (peaks is None):
             return []
 
         if peaks is None:
-            assert (mzs is not None) and (intensities is not None), 'provide either peaks OR (mzs AND intensities)'
+            assert (mzs is not None) and (intensities is not None), \
+                'provide either peaks OR (mzs AND intensities)'
             assert len(mzs) == len(intensities)
+            if annotations is not None:
+                assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
             peaks = []
-            for mz, i in zip(mzs, intensities):
-                peaks.append(PeakFeature(mz=mz, intensity=i))
-            return [PeakFeature(mz=p.mz, intensity=p.intensity, peak_list=self) for p in peaks]
+            for mz, i, a in zip(mzs, intensities, annotations):
+                peaks.append(PeakFeature(mz=mz, intensity=i, annotation=a, peak_list=self))
+            return peaks
 
         assert (mzs is None) and (intensities is None), 'provide either peaks OR (mzs AND intensities)'
         if isinstance(peaks, dict):
@@ -89,6 +94,10 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
     @property
     def intensities(self) -> list[float]:
         return [p.intensity for p in self.peaks]
+
+    @property
+    def annotations(self) -> list[str]:
+        return [p.annotation for p in self.peaks]
 
     def __add__(self, other: Self) -> Self:
         new_peaks = self.peaks.copy()
@@ -108,12 +117,17 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
 
         mzs = []
         ints = []
+        comments = []
         for line in lines_peaks:
-            mz, i = line.split(splitter)[:2]
+            # split of comment
+            peak, comment = line.split('"', 1)
+            comment = comment.rstrip('"\n')
+            mz, i = peak.split(splitter)[:2]
             mzs.append(float(mz))
             ints.append(float(i))
+            comments.append(comment)
 
-        return cls(mzs, ints, name=name)
+        return cls(mzs, ints, annotations=comments, name=name)
 
     def plot(self, ax: plt.Axes = None) -> plt.Axes:
         if ax is None:
