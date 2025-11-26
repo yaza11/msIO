@@ -120,12 +120,17 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
         comments = []
         for line in lines_peaks:
             # split of comment
-            peak, comment = line.split('"', 1)
-            comment = comment.rstrip('"\n')
+            if '"' in line:
+                peak, comment = line.split('"', 1)
+                comment = comment.rstrip('"\n')
+                comments.append(comment)
+            else:
+                peak = line
+                comments.append(None)
             mz, i = peak.split(splitter)[:2]
             mzs.append(float(mz))
             ints.append(float(i))
-            comments.append(comment)
+
 
         return cls(mzs, ints, annotations=comments, name=name)
 
