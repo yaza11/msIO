@@ -97,7 +97,7 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     @cached_property
     def mz(self):
         """MetaboScape does not export mz values, so need to calculate mz from M and adduct (:"""
-        from LipidCalculator.adduct_parser.parser import get_mz_from_M_and_adduct
+        from LipidCalculator.adduct.parser import get_mz_from_M_and_adduct
         return get_mz_from_M_and_adduct(self.M, self.adduct)
 
     @property
