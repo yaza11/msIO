@@ -2,7 +2,7 @@ from functools import cached_property
 from typing import Optional
 
 import pandas as pd
-from sqlalchemy import Integer, Float, String, ForeignKey
+from sqlalchemy import Integer, Float, String, ForeignKey, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from msIO.environmental.sample import Sample
@@ -18,7 +18,13 @@ METABOSCAPE_CSV_RENAME_COLUMNS: dict[str, str] = {
     'MOLECULAR_FORMULA': 'formula_metaboscape',
     'ADDUCT': 'adduct_metaboscape',
     'KEGG': 'KEGG',
-    'CAS': 'CAS'
+    'CAS': 'CAS',
+    'm/z meas.': 'mz_meas',
+    'Ions': 'ion_types',
+    'Flags': 'flags',
+    'AQ': 'annotation_type',
+    'Annotation Source': 'annotation_source',
+    'Include': 'include_flag'
 }
 
 
@@ -52,6 +58,11 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     adduct_metaboscape: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     KEGG: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     CAS: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    mz_meas: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    flags: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    annotation_type: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    annotation_source: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    include_flag: Mapped[bool] = mapped_column(Boolean, nullable=True)
 
     intensities: Mapped[list[Intensity]] = relationship(
         back_populates="feature",
