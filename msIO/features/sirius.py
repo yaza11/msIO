@@ -154,7 +154,7 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
         # TODO: fill nan values, where possible
 
         compound_groups = []
-        if 'canopus_formula_summary' not in tables:
+        if 'canopus_formula_summary' in tables:
             sub_df = select_rows_by_feature(tables['canopus_formula_summary'])
             for _, row in sub_df.iterrows():
                 f = CompoundGroup(**row.to_dict())
