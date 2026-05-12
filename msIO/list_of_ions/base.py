@@ -75,7 +75,6 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             if annotations is not None:
                 assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
             else:
-                print(mzs)
                 annotations = [None] * len(mzs)
             peaks = []
             for mz, i, a in zip(mzs, intensities, annotations):
