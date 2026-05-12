@@ -56,7 +56,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             name: Optional[str] = None
     ) -> None:
         self.name = name
-        self.peaks = self._build_peaks(mzs, intensities, annotations, peaks)
+        self.peaks = self._build_peaks(mzs=mzs, intensities=intensities, annotations=annotations, peaks=peaks)
 
     def _build_peaks(
             self,
@@ -75,6 +75,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             if annotations is not None:
                 assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
             else:
+                print(mzs)
                 annotations = [None] * len(mzs)
             peaks = []
             for mz, i, a in zip(mzs, intensities, annotations):
