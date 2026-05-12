@@ -74,6 +74,8 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             assert len(mzs) == len(intensities)
             if annotations is not None:
                 assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
+            else:
+                annotations = [None] * len(mzs)
             peaks = []
             for mz, i, a in zip(mzs, intensities, annotations):
                 peaks.append(PeakFeature(mz=mz, intensity=i, annotation=a, peak_list=self))

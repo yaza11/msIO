@@ -69,7 +69,7 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
         if ':' not in l:
             continue
         k, v = l.split(':', 1)
-        pyk = msp_key_to_py[k]
+        pyk = msp_key_to_py.get(k, k)
         v = converts.get(pyk, default_str)(v)
         e[pyk] = v
     return e
@@ -83,9 +83,9 @@ class MSPReader(BaseLib):
         with open(path_lib, 'rb') as f:
             n_lines = sum(1 for _ in f)
 
-        with open(path_lib, 'r') as f:
+        with open(path_lib, 'r', encoding='utf-8') as f:
             lines = []
-            for i, l in tqdm(enumerate(f), total=n_lines, desc='parsing msp file'):
+            for i, l in tqdm(enumerate(f), total=n_lines, desc='parsing msp file', smoothing=1/50):
                 lines.append(l)
                 if l == '\n':
                     entries[i] = _parse_lines(lines)
@@ -132,6 +132,7 @@ if __name__ == '__main__':
     # MSDialLib = MSPReader(path_lib)
     # s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
 
-    path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
+    # path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
+    path_file = r"C:\Users\Yannick Zander\Downloads\Archlips_Full_spectral_library.msp"
 
     rdr = MSPReader(path_file, splitter_peaks_list=' ')
