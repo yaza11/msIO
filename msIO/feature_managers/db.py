@@ -182,6 +182,36 @@ class FeatureManagerDB:
         with self.session_maker() as session:
             return session.scalars(stmt).first()
 
+    def get_ms_spectra(self, feature_ids: list[int], level: int) -> dict[int, PeakList]:
+        level = int(level)
+
+        if level not in (1, 2):
+            raise ValueError("level must be 1 or 2")
+
+        if not feature_ids:
+            return {}
+
+        stmt = (
+            select(FeatureMgf.feature_id, PeakList)
+            .select_from(MsSpec)
+            .join(FeatureMgf, MsSpec.feature_mgf_id == FeatureMgf.id)
+            .join(PeakList, MsSpec.peaks_id == PeakList.id)
+            .options(selectinload(PeakList.peaks))
+            .where(
+                FeatureMgf.feature_id.in_(feature_ids),
+                MsSpec.ms_level == level,
+                MsSpec.peaks_id.is_not(None),
+            )
+        )
+
+        with self.session_maker() as session:
+            rows = session.execute(stmt).all()
+
+        return {
+            feature_id: peak_list
+            for feature_id, peak_list in rows
+        }
+
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
@@ -193,6 +223,8 @@ if __name__ == '__main__':
 
     spec = dbm.get_ms_spectrum(feature_id=8, level=2)
     spec.plot()
+
+    specs = dbm.get_ms_spectra(feature_ids=list(range(1, 1000)), level=2)
 
     # Session = dbm.get_active_session()
     # with Session() as session:
