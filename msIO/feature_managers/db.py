@@ -2,6 +2,7 @@ from typing import Any
 
 from tqdm import tqdm
 
+from msIO import PeakList
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import joinedload, load_only
 from sqlalchemy import select, inspect
@@ -10,7 +11,7 @@ from sqlalchemy.orm import selectinload, joinedload, Load
 # need to import so that sqlalchemy knows about relationships
 from msIO.features.gnps import FeatureGnpsNode
 from msIO.features.metaboscape import FeatureMetaboScape
-from msIO.features.mgf import FeatureMgf
+from msIO.features.mgf import FeatureMgf, MsSpec
 from msIO.features.sirius import FeatureSirius, CompoundCandidate, FormulaCandidate
 from msIO.features.base import SqlBaseClass
 from msIO.features.combined import FeatureCombined
@@ -160,6 +161,27 @@ class FeatureManagerDB:
                 names[o.feature_id] = o.name_sirius
         return names
 
+    def get_ms_spectrum(self, feature_id: int, level: int) -> PeakList:
+        # fetch ms spectrum sql file for specified feature id and level (1 for isotope pattern, 2 for fragment spectrum)
+        if level not in (1, 2):
+            raise ValueError("level must be 1 or 2")
+
+        stmt = (
+            select(PeakList)
+            .select_from(MsSpec)
+            .join(MsSpec.feature_mgf)
+            .join(MsSpec.peaks)
+            .options(selectinload(PeakList.peaks))
+            .where(
+                FeatureMgf.feature_id == feature_id,
+                MsSpec.ms_level == level,
+                MsSpec.peaks_id.is_not(None),
+            )
+        )
+
+        with self.session_maker() as session:
+            return session.scalars(stmt).first()
+
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
@@ -167,7 +189,10 @@ class FeatureManagerDB:
 if __name__ == '__main__':
     from msIO.features.combined import FeatureCombined
 
-    dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SQL\database.db")
+    dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas really new method\SQL\database.db")
+
+    spec = dbm.get_ms_spectrum(feature_id=8, level=2)
+    spec.plot()
 
     # Session = dbm.get_active_session()
     # with Session() as session:
