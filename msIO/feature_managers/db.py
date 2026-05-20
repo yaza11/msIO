@@ -1,8 +1,12 @@
 from typing import Any
 
+import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from msIO import PeakList
+from msIO.environmental.sample import Sample
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import joinedload, load_only
 from sqlalchemy import select, inspect
@@ -10,7 +14,7 @@ from sqlalchemy.orm import selectinload, joinedload, Load
 
 # need to import so that sqlalchemy knows about relationships
 from msIO.features.gnps import FeatureGnpsNode
-from msIO.features.metaboscape import FeatureMetaboScape
+from msIO.features.metaboscape import FeatureMetaboScape, Intensity
 from msIO.features.mgf import FeatureMgf, MsSpec
 from msIO.features.sirius import FeatureSirius, CompoundCandidate, FormulaCandidate
 from msIO.features.base import SqlBaseClass
@@ -212,6 +216,71 @@ class FeatureManagerDB:
             for feature_id, peak_list in rows
         }
 
+    def get_intensities(self, feature_id) -> dict[str, int]:
+        """Returns a dict mapping sample names to intensities for the given feature id."""
+        stmt = (
+            select(Sample.sample_name, Intensity.value)
+            .join(Intensity, Intensity.sample_id == Sample.id)
+            .where(Intensity.feature_id == feature_id)
+        )
+
+        with self.session_maker() as session:
+            ints = session.execute(stmt).all()
+            return dict(ints)
+
+    def compare_features(self, f_id1: int, f_id2: int):
+        fig, axs = plt.subplots(nrows=4)
+
+        f_1 = self.get_feature(f_id1)
+        f_2 = self.get_feature(f_id2)
+
+        ms1: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_1.mgf.ms_specs}
+        ms2: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_2.mgf.ms_specs}
+
+        # MS/MS mirror plot
+        if 2 in ms1:
+            axs[0].stem(ms1[2].mzs, ms1[2].intensities, label=f_id1, markerfmt='', linefmt='C0-')
+        if 2 in ms2:
+            axs[0].stem(ms2[2].mzs, -np.asarray(ms2[2].intensities), label=f_id2, markerfmt='', linefmt='C1-')
+        axs[0].set_title('MS/MS spectra')
+        axs[0].legend()
+        axs[0].set_xlabel('m/z in Da')
+
+        # MS1 plot
+        if 1 in ms1:
+            axs[1].stem(np.asarray(ms1[1].mzs) - ms1[1].mzs[0], np.asarray(ms1[1].intensities) / max(ms1[1].intensities),
+                        label=f_id1, markerfmt='', linefmt='C0-')
+        if 1 in ms2:
+            axs[1].stem(np.asarray(ms2[1].mzs) - ms2[1].mzs[0], np.asarray(ms2[1].intensities) / max(ms2[1].intensities),
+                        label=f_id2, markerfmt='', linefmt='C1--')
+        axs[1].set_title('To M0 shifted and 1-scaled MS1 spectra')
+        axs[1].legend()
+        axs[1].set_xlabel('m/z in Da')
+
+        # table with properties
+        df = pd.DataFrame(dict(
+            rt_min=[round(f_1.metaboscape.rt_seconds / 60, 2), round(f_2.metaboscape.rt_seconds / 60, 2)],
+            ccs=[round(f_1.metaboscape.CCS, 1), round(f_2.metaboscape.CCS, 1)],
+            mz=[round(f_1.metaboscape.mz_meas, 4), round(f_2.metaboscape.mz_meas, 4)],
+            main_ion=[f_1.metaboscape.adduct, f_2.metaboscape.adduct],
+            M=[round(f_1.metaboscape.M_metaboscape, 4), round(f_1.metaboscape.M_metaboscape, 4)],
+            annotation=[f_1.metaboscape.name_metaboscape, f_2.metaboscape.name_metaboscape],
+        ))
+        df.index = [f_id1, f_id2]
+        axs[2].axis("off")
+        pd.plotting.table(ax=axs[2], data=df.T, loc="center", cellLoc="center", edges='open')
+
+        # bar plot with intensities
+        ints1 = {i.sample.sample_name: i.value for i in f_1.metaboscape.intensities}
+        ints2 = {i.sample.sample_name: i.value for i in f_2.metaboscape.intensities}
+        df = pd.DataFrame(data=[ints1, ints2], index=[f_id1, f_id2]).T
+
+        df.plot.bar(rot=45, ax=axs[3])
+        axs[3].set_title('Intensities')
+        axs[3].legend()
+
+        return fig, axs
+
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
@@ -219,12 +288,19 @@ class FeatureManagerDB:
 if __name__ == '__main__':
     from msIO.features.combined import FeatureCombined
 
-    dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas really new method\SQL\database.db")
+    dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db")
 
-    spec = dbm.get_ms_spectrum(feature_id=8, level=2)
+    ints = dbm.get_intensities(feature_id=1)
+
+
+    self = dbm
+    f_id1, f_id2 = 1379, 1363
+    self.compare_features(f_id1, f_id2)
+
+    spec = dbm.get_ms_spectrum(feature_id=1379, level=2)
     spec.plot()
-
-    specs = dbm.get_ms_spectra(feature_ids=list(range(1, 1000)), level=2)
+    #
+    # specs = dbm.get_ms_spectra(feature_ids=list(range(1, 1000)), level=2)
 
     # Session = dbm.get_active_session()
     # with Session() as session:
