@@ -13,7 +13,7 @@ class MetaboscapeImportManager(FeatureManager):
         _df = pd.read_csv(path_metaboscape_export_file).rename(columns=METABOSCAPE_CSV_RENAME_COLUMNS)
         # for some reason, the retention time in the csv export is not always in seconds
         if _df.loc[:, 'rt_seconds'].diff().median() < 0.1:  # likely minutes
-            _df.loc[:, 'rt_seconds'] = _df.loc[:, 'rt_minutes'] * 60
+            _df.loc[:, 'rt_seconds'] = _df.loc[:, 'rt_seconds'] * 60
 
         # discard mean, max intensity columns
         drop_cols = []
