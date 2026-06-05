@@ -53,7 +53,8 @@ def eager_options_for(cls, strategy="selectin", maxdepth=10, seen=None):
 
 class FeatureManagerDB:
     """
-    Object for accessing and modifying a DB created with a ProjectImportManager instance
+    Object for accessing and modifying a DB created with a ProjectImportManager
+     instance
     """
 
     def __init__(self, path_file_db: str):
@@ -285,20 +286,151 @@ class FeatureManagerDB:
         raise NotImplementedError()
 
 
+def cosine_similarity_forward(ref: PeakList, meas: PeakList, max_dmz_da: float) -> float:
+    """Match peaks of b in a (a is therefore the reference)"""
+    norm2 = lambda intensities: sum([i ** 2 for i in intensities])
+
+    norm_a = norm2(ref.intensities)
+    norm_b = norm2(meas.intensities)
+
+    mzs_ref = np.asarray(ref.mzs, dtype=float)
+    ints_ref = np.asarray(ref.intensities, dtype=float)
+
+    running_score = 0
+    for pb in meas.peaks:
+        if np.any(idcs_match := (np.abs(pb.mz - mzs_ref) < max_dmz_da)):
+            running_score += pb.intensity * ints_ref[idcs_match].sum()
+
+    return running_score / (norm_a * norm_b)
+
+
+def cosine_similarity_backward(ref: PeakList, meas: PeakList, max_dmz_da: float) -> float:
+    return cosine_similarity_forward(meas, ref, max_dmz_da)
+
+
+def cosine_similarity_sim(a, b, max_dmz_da) -> float:
+    score = (
+            cosine_similarity_forward(a, b, max_dmz_da) / 2
+            + cosine_similarity_forward(b, a, max_dmz_da) / 2
+    )
+    return score
+
+
+class Library(FeatureManagerDB):
+    """
+    This class is not intended to be structured like this longterm. This is
+    merely necessary because the current architecture is used for turning msp
+    libraries into sql files.
+    """
+    _mzs: dict[int, float] = None
+
+    @property
+    def mzs(self) -> dict[int, float]:
+        if self._mzs is None:
+            stmt = (
+                select(FeatureMgf)
+                .options(load_only(
+                    FeatureMgf.combined_feature_id,
+                    FeatureMgf.mz,
+                ))
+            )
+
+            with self.session_maker() as session:
+                objs = session.execute(stmt).scalars().all()
+            self._mzs: dict[int, float] = {o.combined_feature_id: o.mz for o in objs}
+        return self._mzs
+
+    def find_matches(
+            self,
+            mz: float,
+            max_dmz_da: float=None,
+            max_dmz_ppm: float | int = None,
+            ms2: PeakList = None,
+            max_ms2_dmz_da: float = 10e-3,
+            min_cos_sim: float = 0.7
+    ):
+        assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
+            'provide either max_dmz_da or max_dmz_ppm (but not both)'
+
+        if max_dmz_da is None:
+            max_dmz_da = mz * (max_dmz_ppm * 1e-6)
+
+        # get all features that match the mz within the tolerance
+        mz_lower = mz - max_dmz_da
+        mz_upper = mz + max_dmz_da
+
+        # retrieve the feature ids and load the complete objects
+        stmt = (
+            select(FeatureMgf, CompoundCandidate)
+            .outerjoin(
+                CompoundCandidate,
+                CompoundCandidate.feature_id == FeatureMgf.combined_feature_id
+            )
+            .options(
+                selectinload(FeatureMgf.ms_specs)
+                .selectinload(MsSpec.peaks)
+                .selectinload(PeakList.peaks)
+            )
+            .where(FeatureMgf.mz.between(mz_lower, mz_upper))
+        )
+        with self.session_maker() as session:
+            matches = session.execute(stmt).unique().all()
+
+        def add_notnone_attributes(obj):
+            return {
+                k: v
+                for k, v in obj.__dict__.items()
+                if (v is not None) and (not k.startswith('_'))
+            }
+
+        matches_transformed = []
+        for match in matches:
+            feature_mgf, compound_candidate = match
+            # all features that are not None
+            out = add_notnone_attributes(compound_candidate) | add_notnone_attributes(feature_mgf)
+
+            if ms2 is not None:
+                ms2_refs = [ms_spec for ms_spec in feature_mgf.ms_specs if ms_spec.ms_level == 2]
+                if len(ms2_refs) == 0:  # no ms2 information
+                    continue
+                score = cosine_similarity_sim(ms2_refs[0], ms2, max_ms2_dmz_da)
+                if score < min_cos_sim:
+                    continue
+            else:
+                score = None
+
+            matches_transformed.append(out)
+            out['dmz'] = feature_mgf.mz - mz
+            if score is not None:
+                out['cosine_score'] = score
+
+        return matches_transformed
+
+
 if __name__ == '__main__':
-    from msIO.features.combined import FeatureCombined
+    # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
+    lib_file = r"C:\Users\yanni\Downloads\library.sql"
+    lib = Library(lib_file)
 
-    dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db")
+    target_mz = 533.40480  # 1G-DEG 20:1 should be a match
+    matches = lib.find_matches(target_mz, max_dmz_da=5e-3)
+    match = matches[0]
 
-    ints = dbm.get_intensities(feature_id=1)
 
 
-    self = dbm
-    f_id1, f_id2 = 1379, 1363
-    self.compare_features(f_id1, f_id2)
-
-    spec = dbm.get_ms_spectrum(feature_id=1379, level=2)
-    spec.plot()
+    # from msIO.features.combined import FeatureCombined
+    #
+    # dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db")
+    #
+    # ints = dbm.get_intensities(feature_id=1)
+    #
+    #
+    # self = dbm
+    # f_id1, f_id2 = 6000, 6050
+    # self.compare_features(f_id1, f_id2)
+    #
+    # spec = dbm.get_ms_spectrum(feature_id=6050, level=2)
+    # spec.plot()
     #
     # specs = dbm.get_ms_spectra(feature_ids=list(range(1, 1000)), level=2)
 
@@ -316,7 +448,7 @@ if __name__ == '__main__':
     # RTs = dbm.retention_times_in_seconds
     # CCS = dbm.collisional_cross_sections
     # F_m = dbm.formula_metaboscape
-    F_s = dbm.formula_sirius
+    # F_s = dbm.formula_sirius
 
     # names = dbm.name_sirius
 

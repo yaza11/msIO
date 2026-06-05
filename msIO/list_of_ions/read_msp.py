@@ -4,6 +4,9 @@ from tqdm import tqdm
 
 from msIO.environmental.location import Location
 from msIO.features.combined import FeatureCombined
+from msIO.features.metaboscape import FeatureMetaboScape
+from msIO.features.mgf import FeatureMgf, MsSpec
+from msIO.features.sirius import FeatureSirius, CompoundCandidate
 from msIO.list_of_ions.base import BaseLib, PeakList
 
 msp_key_to_py: dict[str, str] = {
@@ -76,19 +79,49 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
 
 
 class MSPReader(BaseLib):
-    def __init__(self, path_lib, splitter_peaks_list='\t'):
+    def __init__(self, path_lib=None, splitter_peaks_list=None):
+        if path_lib is None:
+            return
+        self.read_file(path_lib, splitter_peaks_list)
+
+    def read_file(self, path_lib, splitter_peaks_list=None):
         entries = {}
         self.peak_list: dict[int, PeakList] = {}
 
         with open(path_lib, 'rb') as f:
             n_lines = sum(1 for _ in f)
 
-        with open(path_lib, 'r', encoding='utf-8') as f:
+        with open(path_lib, 'r', encoding='utf-8', errors='replace') as f:
             lines = []
-            for i, l in tqdm(enumerate(f), total=n_lines, desc='parsing msp file', smoothing=1/50):
+            for i, l in tqdm(
+                    enumerate(f),
+                    total=n_lines,
+                    desc='parsing msp file',
+                    smoothing=1/50,
+            ):
+            # for i, l in enumerate(f):
                 lines.append(l)
                 if l == '\n':
                     entries[i] = _parse_lines(lines)
+
+                    if splitter_peaks_list is None:
+                        # determine from last line
+                        lines_peaks = [l for l in lines if l[0].isnumeric()]
+                        if len(lines_peaks) == 0:
+                            splitter_peaks_list = None
+                        else:
+                            if '\t' in lines_peaks[0]:
+                                splitter_peaks_list = '\t'
+                            elif ',' in lines_peaks[0]:
+                                splitter_peaks_list = ','
+                            elif ' ' in lines_peaks[0]:
+                                splitter_peaks_list = ' '
+                            else:
+                                raise ValueError(
+                                    f'Unable to determine splitter from line '
+                                    f'{lines_peaks[0]}, please specify manually'
+                                )
+
                     self.peak_list[i] = PeakList.from_lines(
                         lines, splitter=splitter_peaks_list)
                     lines = []
@@ -116,6 +149,58 @@ class MSPReader(BaseLib):
             ion, feature_index
         )
 
+    def get_feature(self, idx: int) -> FeatureCombined:
+        """Convert row and peak list to msIO features that can be stored as sql."""
+        def get_attr_or_none(attr_name):
+            val = row.get(attr_name)
+            if val is None:
+                return None
+            if (isinstance(val, int | float)) and (val < 0):
+                return None
+            return val
+
+        row: dict = self.df_features.loc[idx, :].to_dict()
+
+        if idx in self.peak_list:
+            peaks: PeakList = self.peak_list.get(idx)
+            ms_level = row.get('ms_level', 2)
+            ms_spec = MsSpec(peaks=peaks, ms_level=ms_level)
+            ms_specs = [ms_spec]
+        else:
+            ms_specs = None
+
+        # make sure we use all fields from msp to initialize objects
+        f_mgf = FeatureMgf(
+            rt_seconds = get_attr_or_none('rt_seconds'),
+            mz = get_attr_or_none('mz'),
+            ion=get_attr_or_none('ion'),
+            ms_specs=ms_specs
+        )
+        f_metabo = FeatureMetaboScape(
+            formula_metaboscape=get_attr_or_none('Formula'),
+            CCS = get_attr_or_none('ccs'),
+            # abuse annotation source for comment
+            annotation_source=get_attr_or_none('comment'),
+        )
+
+        compound_candidate = CompoundCandidate(
+            name_sirius=get_attr_or_none('name'),
+            xlogp = get_attr_or_none('logP'),
+            inchi = get_attr_or_none('INCHI'),
+            smiles = get_attr_or_none('smiles'),
+            confidence_rank = get_attr_or_none('confidence_level')  # higher rank/level is better
+        )
+        f_sirius = FeatureSirius(
+            compound_candidates=[compound_candidate]
+        )
+
+        f_combined = FeatureCombined(
+            metaboscape=f_metabo,
+            mgf=f_mgf,
+            sirius=f_sirius,
+        )
+        return f_combined
+
 
 def composition_msdial(msdial):
     ft = msdial.df_features
@@ -133,6 +218,10 @@ if __name__ == '__main__':
     # s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
 
     # path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
-    path_file = r"C:\Users\Yannick Zander\Downloads\Archlips_Full_spectral_library.msp"
+    # path_file = r"C:\Users\yanni\Downloads\Archlips_Full_spectral_library.msp"
 
-    rdr = MSPReader(path_file, splitter_peaks_list=' ')
+    path_file = r"C:\Users\yanni\Downloads\Archlips_High_confidence_spectral_library.msp"
+
+    rdr = MSPReader(path_file)
+
+    # f = rdr.get_feature(rdr.df_features.index[0])
