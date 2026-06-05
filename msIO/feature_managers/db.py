@@ -193,7 +193,7 @@ class FeatureManagerDB:
         if level not in (1, 2):
             raise ValueError("level must be 1 or 2")
 
-        if not feature_ids:
+        if len(feature_ids) == 0:
             return {}
 
         stmt = (
@@ -383,7 +383,7 @@ class Library(FeatureManagerDB):
                 if (v is not None) and (not k.startswith('_'))
             }
 
-        matches_transformed = []
+        matches_transformed: list[dict] = []
         for match in matches:
             feature_mgf, compound_candidate = match
             # all features that are not None
