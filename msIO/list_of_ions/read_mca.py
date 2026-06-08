@@ -147,8 +147,9 @@ class McaImportManager:
         rt_tol_seconds: float = 5.0,
         ccs_tol_A: float = 1.0,
         require_all_within_tolerance: bool = True,
-        sort_by: Literal["ppm", "rt", "ccs", "combined"] = "combined"
-    ) -> list[AnnotationMatch]:
+        sort_by: Literal["ppm", "rt", "ccs", "combined"] = "combined",
+        require_unique_match: bool = True
+    ) -> list[AnnotationMatch] | AnnotationMatch:
         """
         Find annotations whose associated ion matches the given mz/rt/ccs
         within specified tolerances.
@@ -210,6 +211,11 @@ class McaImportManager:
                 }
             ))
 
+        if require_unique_match:
+            assert len(matches) == 1, \
+                "Multiple matches found, even though one is required. Consider lowering the tolerances."
+            return matches[0]
+
         # Sorting
         if sort_by == "ppm":
             matches.sort(key=lambda m: abs(m.deltas["mz_ppm"]))
@@ -227,11 +233,19 @@ class McaImportManager:
         return matches
 
 
-
 if __name__ == "__main__":
-    file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B\MetaboScape\annotations.json"
+    file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\MetaboScape\annotations.mca"
     mgr = McaImportManager(file)
-    results = mgr.find_annotations(mz=639.57110, rt_seconds=1447.9857, ccs=280.27438, mz_tol_ppm=5, rt_tol_seconds=10, ccs_tol_A=1.0)
+
+    # multiple annotations?
+    multi_ann = []
+    for mol_ann in mgr.molecule_annotations:
+        if len([ann for ann in mol_ann.annotations if ann.source.tool_name == 'SmartFormula']) > 1:
+            # should both be spectral library annotations
+            multi_ann.append(mol_ann)
+
+    # results = mgr.find_annotations(mz=1319.34919, rt_seconds=62.15 * 60, ccs=405, mz_tol_ppm=5, rt_tol_seconds=0.02 * 60, ccs_tol_A=.2)
+    results = mgr.find_annotations(mz=330.24252, rt_seconds=1.98 * 60, ccs=178.2, mz_tol_ppm=5, rt_tol_seconds=0.02 * 60, ccs_tol_A=.2)
     for r in results:
         print(f"Match: Ion m/z={r.ion.mz:.6f}, rt={r.ion.rt_seconds:.2f}s, ccs={r.ion.ccs:.2f} Å, deltas={r.deltas}")
         for a in r.annotations:
