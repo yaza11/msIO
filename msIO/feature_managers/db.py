@@ -390,7 +390,11 @@ class Library(FeatureManagerDB):
             out = add_notnone_attributes(compound_candidate) | add_notnone_attributes(feature_mgf)
 
             if ms2 is not None:
-                ms2_refs = [ms_spec for ms_spec in feature_mgf.ms_specs if ms_spec.ms_level == 2]
+                ms2_refs: list[PeakList] = [
+                    ms_spec.peaks
+                    for ms_spec in feature_mgf.ms_specs
+                    if ms_spec.ms_level == 2
+                ]
                 if len(ms2_refs) == 0:  # no ms2 information
                     continue
                 score = cosine_similarity_sim(ms2_refs[0], ms2, max_ms2_dmz_da)
