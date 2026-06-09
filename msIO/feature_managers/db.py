@@ -94,14 +94,15 @@ class FeatureManagerDB:
             select(FeatureMetaboScape)
             .options(load_only(
                 FeatureMetaboScape.feature_id,
-                FeatureMetaboScape.M_metaboscape,
-                FeatureMetaboScape.adduct_metaboscape
+                # FeatureMetaboScape.M_metaboscape,
+                # FeatureMetaboScape.adduct_metaboscape
+                FeatureMetaboScape.mz_meas,
             ))
         )
 
         with self.session_maker() as session:
             objs = session.execute(stmt).scalars().all()
-        return {o.feature_id: o.mz for o in objs}
+        return {o.feature_id: o.mz_meas for o in objs}
 
     def _get_dict_for_attributes(self, parent_obj, attr) -> dict:
         vals = self._get_all_attributes_from(getattr(parent_obj, attr))
@@ -442,6 +443,9 @@ class Library(FeatureManagerDB):
         if len(feature_ids) == 0:
             return {}
 
+        print('getter of lib called')
+        print(len([f for f in feature_ids if f in self.f_ids_sorted]))
+
         stmt = (
             select(FeatureMgf.combined_feature_id, PeakList)
             .select_from(MsSpec)
@@ -457,6 +461,7 @@ class Library(FeatureManagerDB):
 
         with self.session_maker() as session:
             rows = session.execute(stmt).all()
+            print(rows)
 
         return {
             feature_id: peak_list
@@ -556,16 +561,17 @@ class Library(FeatureManagerDB):
 
 if __name__ == '__main__':
     # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
-    lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
-    meas_file = r"C:\Users\yanni\Downloads\Guaymas new method height recursive\SQL\database.db"
+    # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
+    # meas_file = r"C:\Users\yanni\Downloads\Guaymas new method height recursive\SQL\database.db"
+    lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
+    meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db"
+
 
     # target_mzs = [653.68090, 667.69624, 802.74909, 1073.80953] * 100
     # target_names = ['Archaeol(20:0_20:0)', 'MeO-Archaeol(20:0_20:0)', 'Rib-Archaeol(20:0_20:0)', 'SQ-Archaeol(25:3_30:5)'] * 100
 
     lib = Library(lib_file)
     names_lib = lib.names
-
-    lib._set_sorted_mzs()
 
     meas = FeatureManagerDB(meas_file)
     target_mzs = list(meas.mzs.values())

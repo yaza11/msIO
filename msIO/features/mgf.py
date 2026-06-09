@@ -75,7 +75,7 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "mgf_features"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    feature_id: Mapped[Optional[int]] = None
+    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     polarity: Mapped[Optional[str]] = mapped_column(
         Enum("pos", "neg", name="polarity_enum"),
         nullable=True

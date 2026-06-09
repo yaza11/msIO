@@ -89,7 +89,8 @@ class CompoundGroup(SqlBaseClass, FeatureBaseClass):
 class FeatureSirius(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "feature_sirius"
 
-    feature_id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     formula_candidates: Mapped[list[FormulaCandidate]] = relationship(
         back_populates="feature",

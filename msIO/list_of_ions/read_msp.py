@@ -171,12 +171,14 @@ class MSPReader(BaseLib):
 
         # make sure we use all fields from msp to initialize objects
         f_mgf = FeatureMgf(
+            feature_id=idx,
             rt_seconds = get_attr_or_none('rt_seconds'),
             mz = get_attr_or_none('mz'),
             ion=get_attr_or_none('ion'),
             ms_specs=ms_specs
         )
         f_metabo = FeatureMetaboScape(
+            feature_id=idx,
             formula_metaboscape=get_attr_or_none('Formula'),
             CCS = get_attr_or_none('ccs'),
             # abuse annotation source for comment
@@ -191,10 +193,12 @@ class MSPReader(BaseLib):
             confidence_rank = get_attr_or_none('confidence_level')  # higher rank/level is better
         )
         f_sirius = FeatureSirius(
+            feature_id=idx,
             compound_candidates=[compound_candidate]
         )
 
         f_combined = FeatureCombined(
+            feature_id=idx,
             metaboscape=f_metabo,
             mgf=f_mgf,
             sirius=f_sirius,
