@@ -1,20 +1,28 @@
 import os
 
+from sqlalchemy import update
 from tqdm import tqdm
 
 from msIO import MSPReader
+from msIO.features.combined import FeatureCombined
+from msIO.features.metaboscape import FeatureMetaboScape
+from msIO.features.mgf import FeatureMgf
+from msIO.features.sirius import FeatureSirius
 from msIO.sql.session import initiate_db, get_sessionmaker
 
 
 COMMIT_AT_LEAST_EVERY = 1_000
 
-db_file =  r"C:\Users\yanni\Downloads\library_complete.sql"
+db_file =  r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
 folder_julius = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments'
 
 library_files = [
+    r"C:\Users\Yannick Zander\Downloads\Archlips_M+1_Full_spectral_library.msp",
+    r"C:\Users\Yannick Zander\Downloads\Archlips_High_confidence_spectral_library.msp",
+    r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
     # r"C:\Users\yanni\Downloads\Archlips_M+1_Full_spectral_library.msp",
-    r"C:\Users\yanni\Downloads\Archlips_High_confidence_spectral_library.msp",
-    r"C:\Users\yanni\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
+    # r"C:\Users\yanni\Downloads\Archlips_High_confidence_spectral_library.msp",
+    # r"C:\Users\yanni\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
     # r"C:\Users\yanni\Downloads\Archlips_Full_spectral_library.msp"
 ] + [
     os.path.join(folder_julius, f)
@@ -22,23 +30,33 @@ library_files = [
     if (not f.startswith('!') and not ('test_as_H+' in f))
 ]
 
-# initiate_db(db_file)
+initiate_db(db_file)
 
 Session = get_sessionmaker(db_file)
+f_id = 1
 with Session() as session:
     uncommited_features = 0
     for library_file in library_files:
-        msp_manager = MSPReader(library_file, splitter_peaks_list=None)
-        feature_ids = msp_manager.df_features.index
+        low_memory = library_file.endswith('Archlips_M+1_Full_spectral_library.msp')
+        # low_memory = True
+        msp_manager = MSPReader(library_file, splitter_peaks_list=None, low_memory=low_memory)
 
-        for f_id in tqdm(
-                feature_ids,
+        for i in tqdm(
+                range(msp_manager.n_features),
                 desc='adding features to DB',
-                total=len(feature_ids),
+                total=msp_manager.n_features,
                 smoothing=1/50
         ):
-            f = msp_manager.get_feature(f_id)
+            if low_memory:
+                msp_manager.read_next()
+                if msp_manager.df_features.empty:
+                    continue
+                idx = 0
+            else:
+                idx = msp_manager.df_features.index[i]
+            f = msp_manager.create_feature(idx, f_id)
             session.add(f)
+            f_id += 1
             uncommited_features += 1
             if uncommited_features >= COMMIT_AT_LEAST_EVERY:
                 session.commit()
@@ -46,6 +64,6 @@ with Session() as session:
     session.commit()
 
 if __name__ == '__main__':
-    from msIO.feature_managers.db import FeatureManagerDB
+    from msIO.feature_managers.db import Library
 
-    db_m = FeatureManagerDB(db_file)
+    lib = Library(db_file)

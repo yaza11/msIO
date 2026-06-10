@@ -1,23 +1,21 @@
-from typing import Any, Iterable
+from typing import Any, Iterable, Literal, Callable
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
-from tqdm import tqdm
 
 from msIO import PeakList
 from msIO.environmental.sample import Sample
+from msIO.metrics import cosine_similarity_sim
 from msIO.sql.session import get_sessionmaker
-from sqlalchemy.orm import joinedload, load_only
+from sqlalchemy.orm import load_only
 from sqlalchemy import select, inspect
-from sqlalchemy.orm import selectinload, joinedload, Load
+from sqlalchemy.orm import selectinload, joinedload
 
 # need to import so that sqlalchemy knows about relationships
-from msIO.features.gnps import FeatureGnpsNode
 from msIO.features.metaboscape import FeatureMetaboScape, Intensity
 from msIO.features.mgf import FeatureMgf, MsSpec
-from msIO.features.sirius import FeatureSirius, CompoundCandidate, FormulaCandidate
-from msIO.features.base import SqlBaseClass
+from msIO.features.sirius import CompoundCandidate, FormulaCandidate
 from msIO.features.combined import FeatureCombined
 
 
@@ -323,36 +321,6 @@ class FeatureManagerDB:
         raise NotImplementedError()
 
 
-def cosine_similarity_forward(ref: PeakList, meas: PeakList, max_dmz_da: float) -> float:
-    """Match peaks of b in a (a is therefore the reference)"""
-    norm2 = lambda intensities: sum([i ** 2 for i in intensities])
-
-    norm_a = norm2(ref.intensities)
-    norm_b = norm2(meas.intensities)
-
-    mzs_ref = np.asarray(ref.mzs, dtype=float)
-    ints_ref = np.asarray(ref.intensities, dtype=float)
-
-    running_score = 0
-    for pb in meas.peaks:
-        if np.any(idcs_match := (np.abs(pb.mz - mzs_ref) < max_dmz_da)):
-            running_score += pb.intensity * ints_ref[idcs_match].sum()
-
-    return running_score / (norm_a * norm_b)
-
-
-def cosine_similarity_backward(ref: PeakList, meas: PeakList, max_dmz_da: float) -> float:
-    return cosine_similarity_forward(meas, ref, max_dmz_da)
-
-
-def cosine_similarity_sim(a, b, max_dmz_da) -> float:
-    score = (
-            cosine_similarity_forward(a, b, max_dmz_da) / 2
-            + cosine_similarity_forward(b, a, max_dmz_da) / 2
-    )
-    return score
-
-
 class Library(FeatureManagerDB):
     """
     This class is not intended to be structured like this longterm. This is
@@ -364,22 +332,6 @@ class Library(FeatureManagerDB):
 
     _mzs_sorted: np.ndarray[float] = None
     _f_ids_sorted: np.ndarray[int] = None
-
-    @property
-    def mzs(self) -> dict[int, float]:
-        if self._mzs is None:
-            stmt = (
-                select(FeatureMgf)
-                .options(load_only(
-                    FeatureMgf.combined_feature_id,
-                    FeatureMgf.mz,
-                ))
-            )
-
-            with self.session_maker() as session:
-                objs = session.execute(stmt).scalars().all()
-            self._mzs: dict[int, float] = {o.combined_feature_id: o.mz for o in objs}
-        return self._mzs
 
     @property
     def names(self) -> dict[int, str]:
@@ -416,7 +368,7 @@ class Library(FeatureManagerDB):
             mzs: Iterable[float],
             max_dmz_da: float = None,
             max_dmz_ppm: float | int = None,
-    ):
+    ) -> list[list[int]]:
         """Returns the matched feature ids"""
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
             'provide either max_dmz_da or max_dmz_ppm (but not both)'
@@ -430,43 +382,13 @@ class Library(FeatureManagerDB):
         idcs_left = np.searchsorted(self.mzs_sorted, mzs - max_dmz_da, side='right')
         idcs_right = np.searchsorted(self.mzs_sorted, mzs + max_dmz_da, side='right')
 
-        return [
+        f_ids: list[np.ndarray[int]] = [
             self.f_ids_sorted[idx_left:idx_right]
             for idx_left, idx_right in zip(idcs_left, idcs_right)
         ]
 
-    def _get_ms_spectra_limited_variable_number(
-            self,
-            feature_ids: list[int],
-            level: int
-    ) -> dict[int, PeakList]:
-        if len(feature_ids) == 0:
-            return {}
-
-        print('getter of lib called')
-        print(len([f for f in feature_ids if f in self.f_ids_sorted]))
-
-        stmt = (
-            select(FeatureMgf.combined_feature_id, PeakList)
-            .select_from(MsSpec)
-            .join(FeatureMgf, MsSpec.feature_mgf_id == FeatureMgf.id)
-            .join(PeakList, MsSpec.peaks_id == PeakList.id)
-            .options(selectinload(PeakList.peaks))
-            .where(
-                FeatureMgf.combined_feature_id.in_(feature_ids),
-                MsSpec.ms_level == level,
-                MsSpec.peaks_id.is_not(None),
-            )
-        )
-
-        with self.session_maker() as session:
-            rows = session.execute(stmt).all()
-            print(rows)
-
-        return {
-            feature_id: peak_list
-            for feature_id, peak_list in rows
-        }
+        # convert types
+        return [[int(f_id) for f_id in _f_ids] for _f_ids in f_ids]
 
     def find_matches(
             self,
@@ -475,7 +397,8 @@ class Library(FeatureManagerDB):
             max_dmz_ppm: float | int = None,
             ms2: Iterable[PeakList] = None,
             max_ms2_dmz_da: float = 10e-3,
-            min_cos_sim: float = 0.7
+            min_sim: float = 0.7,
+            metric: Callable[[PeakList | None, PeakList | None], float] | Literal['cosine_fwd', 'cosine_bwd', 'cosine_sim'] = 'cosine_sim',
     ):
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
             'provide either max_dmz_da or max_dmz_ppm (but not both)'
@@ -571,6 +494,7 @@ if __name__ == '__main__':
     # target_names = ['Archaeol(20:0_20:0)', 'MeO-Archaeol(20:0_20:0)', 'Rib-Archaeol(20:0_20:0)', 'SQ-Archaeol(25:3_30:5)'] * 100
 
     lib = Library(lib_file)
+    mzs_lib = lib.mzs
     names_lib = lib.names
 
     meas = FeatureManagerDB(meas_file)
@@ -578,12 +502,12 @@ if __name__ == '__main__':
     names_metaboscape = meas.names_metaboscape
     target_names = [names_metaboscape[f_id] for f_id in meas.mzs]
 
-    matched_f_ids = lib.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
+    matched_f_ids: list[list[int]] = lib.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
     matched_names = [[names_lib[f_id] for f_id in f_ids] for f_ids in matched_f_ids]
 
     self = lib
 
-    f_ids_matched_precursor: list[np.ndarray[int]] = self.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
+    f_ids_matched_precursor: list[list[int]] = self.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
 
     # pre-load ms2 spectra of all matched features
     f_ids_matched_unique: set[int] = set()
@@ -591,6 +515,15 @@ if __name__ == '__main__':
         f_ids_matched_unique.update(_f_ids_matched_precursor)
 
     matches_ms2: dict[int, PeakList] = self.get_ms_spectra(list(f_ids_matched_unique), level=2)
+
+    meas_f_with_match = [f_id for f_id, matched_f_id in zip(meas.feature_ids, matched_f_ids) if len(matched_f_id) > 0]
+    meas_ms2: dict[int, PeakList] = meas.get_ms_spectra(meas_f_with_match, level=2)
+
+    # assign scores
+    ms2_scores = [
+        [cosine_similarity_sim(matches_ms2.get(f_id_lib), meas_ms2.get(f_id_meas), 10e-3) for f_id_lib in f_id_libs]
+        for f_id_meas, f_id_libs in zip(meas.feature_ids, matched_f_ids)
+    ]
 
     import time
     t0 = time.time()

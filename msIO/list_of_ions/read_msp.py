@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from itertools import islice
 
 from msIO.environmental.location import Location
 from msIO.features.combined import FeatureCombined
@@ -79,52 +80,110 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
 
 
 class MSPReader(BaseLib):
-    def __init__(self, path_lib=None, splitter_peaks_list=None):
-        if path_lib is None:
-            return
-        self.read_file(path_lib, splitter_peaks_list)
+    splitter_peaks_list: str = None
+    path_file: str = None
+    low_memory: bool = None
+    n_lines: int = None
+    _current_file_offset = 0
 
-    def read_file(self, path_lib, splitter_peaks_list=None):
+    peak_list: dict[int, PeakList] = None
+
+    def __init__(self, path_file=None, splitter_peaks_list=None, low_memory=False):
+        self.path_file = path_file
+
+        if splitter_peaks_list is not None:
+            self.splitter_peaks_list = splitter_peaks_list
+
+        self.low_memory = low_memory
+
+        with open(self.path_file, 'rb') as f:
+            self.n_lines = sum(1 for _ in f)
+        with open(self.path_file, 'r', errors='replace', encoding='utf-8') as f:
+            self.n_features = sum([1 for l in f if l == '\n']) + 1
+
+        if path_file is None:
+            return
+
+        if not low_memory:
+            self.read_file()
+            # update number of features (multiple blank rows are counted as multiple features)
+            self.n_features = self.df_features.shape[0]
+
+    def _process_lines(self, lines: list[str]) -> tuple[dict, PeakList]:
+        # determine splitter for peaks
+        if self.splitter_peaks_list is None:
+            # determine from last line
+            lines_peaks = [l for l in lines if l[0].isnumeric()]
+            if len(lines_peaks) == 0:
+                self.splitter_peaks_list = None
+            else:
+                if '\t' in lines_peaks[0]:
+                    self.splitter_peaks_list = '\t'
+                elif ',' in lines_peaks[0]:
+                    self.splitter_peaks_list = ','
+                elif ' ' in lines_peaks[0]:
+                    self.splitter_peaks_list = ' '
+                else:
+                    raise ValueError(
+                        f'Unable to determine splitter from line '
+                        f'{lines_peaks[0]}, please specify manually'
+                    )
+        entries = _parse_lines(lines)
+        peak_list = PeakList.from_lines(lines, splitter=self.splitter_peaks_list)
+        return entries, peak_list
+
+    def read_next(self):
+        """always assigns index 0"""
+        with open(self.path_file, 'rb') as f:
+            # print(self._current_file_offset)
+            f.seek(self._current_file_offset)
+            lines = []
+
+            while True:
+                line = f.readline()
+                self._current_file_offset += len(line)
+                line = line.decode('utf-8', errors="replace").strip('\r\n')
+                if len(line) == 0:
+                    break
+                lines.append(line)
+
+        ent, peak_list = self._process_lines(lines)
+        entries = {0: ent}
+
+        self.peak_list: dict[int, PeakList] = {0: peak_list}
+
+        if len(ent) == 0:
+            self.df_features = pd.DataFrame()
+            return
+
+        self.df_features: pd.DataFrame = pd.DataFrame.from_dict(
+            entries, orient='index')
+        self.df_features.loc[:, 'ms_level'] = 2
+        if 'rt_minutes' in self.df_features.columns:
+            self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
+
+
+    def read_file(self):
         entries = {}
         self.peak_list: dict[int, PeakList] = {}
 
-        with open(path_lib, 'rb') as f:
-            n_lines = sum(1 for _ in f)
-
-        with open(path_lib, 'r', encoding='utf-8', errors='replace') as f:
+        with open(self.path_file, 'r', encoding='utf-8', errors='replace') as f:
             lines = []
             for i, l in tqdm(
                     enumerate(f),
-                    total=n_lines,
+                    total=self.n_lines,
                     desc='parsing msp file',
-                    smoothing=1/50,
+                    smoothing=1/50
             ):
-            # for i, l in enumerate(f):
                 lines.append(l)
-                if l == '\n':
-                    entries[i] = _parse_lines(lines)
+                if not l == '\n':  # feature ends
+                    continue
 
-                    if splitter_peaks_list is None:
-                        # determine from last line
-                        lines_peaks = [l for l in lines if l[0].isnumeric()]
-                        if len(lines_peaks) == 0:
-                            splitter_peaks_list = None
-                        else:
-                            if '\t' in lines_peaks[0]:
-                                splitter_peaks_list = '\t'
-                            elif ',' in lines_peaks[0]:
-                                splitter_peaks_list = ','
-                            elif ' ' in lines_peaks[0]:
-                                splitter_peaks_list = ' '
-                            else:
-                                raise ValueError(
-                                    f'Unable to determine splitter from line '
-                                    f'{lines_peaks[0]}, please specify manually'
-                                )
+                ent, peak_list = self._process_lines(lines)
+                entries[i] = ent
+                self.peak_list[i] = peak_list
 
-                    self.peak_list[i] = PeakList.from_lines(
-                        lines, splitter=splitter_peaks_list)
-                    lines = []
+                lines = []
 
         self.df_features: pd.DataFrame = pd.DataFrame.from_dict(
             entries, orient='index')
@@ -149,7 +208,7 @@ class MSPReader(BaseLib):
             ion, feature_index
         )
 
-    def get_feature(self, idx: int) -> FeatureCombined:
+    def create_feature(self, idx: int, feature_id=None) -> FeatureCombined:
         """Convert row and peak list to msIO features that can be stored as sql."""
         def get_attr_or_none(attr_name):
             val = row.get(attr_name)
@@ -171,21 +230,22 @@ class MSPReader(BaseLib):
 
         # make sure we use all fields from msp to initialize objects
         f_mgf = FeatureMgf(
-            feature_id=idx,
-            rt_seconds = get_attr_or_none('rt_seconds'),
-            mz = get_attr_or_none('mz'),
-            ion=get_attr_or_none('ion'),
+            feature_id=feature_id,
             ms_specs=ms_specs
         )
         f_metabo = FeatureMetaboScape(
-            feature_id=idx,
-            formula_metaboscape=get_attr_or_none('Formula'),
+            feature_id=feature_id,
+            rt_seconds=get_attr_or_none('rt_seconds'),
             CCS = get_attr_or_none('ccs'),
+            mz_meas=get_attr_or_none('mz'),
+            adduct_metaboscape=get_attr_or_none('ion'),
+            formula_metaboscape=get_attr_or_none('Formula'),
             # abuse annotation source for comment
             annotation_source=get_attr_or_none('comment'),
         )
 
         compound_candidate = CompoundCandidate(
+            feature_id=feature_id,
             name_sirius=get_attr_or_none('name'),
             xlogp = get_attr_or_none('logP'),
             inchi = get_attr_or_none('INCHI'),
@@ -193,12 +253,12 @@ class MSPReader(BaseLib):
             confidence_rank = get_attr_or_none('confidence_level')  # higher rank/level is better
         )
         f_sirius = FeatureSirius(
-            feature_id=idx,
+            feature_id=feature_id,
             compound_candidates=[compound_candidate]
         )
 
         f_combined = FeatureCombined(
-            feature_id=idx,
+            feature_id=feature_id,
             metaboscape=f_metabo,
             mgf=f_mgf,
             sirius=f_sirius,
@@ -224,8 +284,14 @@ if __name__ == '__main__':
     # path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
     # path_file = r"C:\Users\yanni\Downloads\Archlips_Full_spectral_library.msp"
 
-    path_file = r"C:\Users\yanni\Downloads\Archlips_High_confidence_spectral_library.msp"
+    path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
 
-    rdr = MSPReader(path_file)
+    # rdr = MSPReader(path_file, low_memory=True)
+    # rdr.read_file()
+
+    rdr2 = MSPReader(path_file, low_memory=True)
+    for i in tqdm(range(rdr2.n_features)):
+        rdr2.read_next()
+    print(rdr2.df_features.T)
 
     # f = rdr.get_feature(rdr.df_features.index[0])
