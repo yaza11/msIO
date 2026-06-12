@@ -47,12 +47,15 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "metaboscape_features"
     # __allow_unmapped__ = True
 
+    # TODO: define Annotation objects
+
     id: Mapped[int] = mapped_column(primary_key=True)  # include only if not inherited
     feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     rt_seconds: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     M_metaboscape: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     CCS: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     sigma_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # msms_score: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     name_metaboscape: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     formula_metaboscape: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     adduct_metaboscape: Mapped[Optional[str]] = mapped_column(String, nullable=True)
@@ -96,6 +99,11 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                     k_new = METABOSCAPE_CSV_RENAME_COLUMNS[k]
                 processed[k_new] = cls._convert_type(k_new, v)
         return cls(**processed)
+
+    @classmethod
+    def from_metaboscape_api(cls, feature_table_api):
+        # TODO
+        ...
 
     @property
     def M(self):

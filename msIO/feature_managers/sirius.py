@@ -118,6 +118,7 @@ class SiriusImportManager(FeatureManager):
 
         files = [get_sirius_file_for_tag(f, self.export_tag)
                  for f in SIRIUS_FILE_NAMES]
+        print(files)
 
         self._tables: dict[str, pd.DataFrame] = {
             name: pd.read_csv(
@@ -140,12 +141,13 @@ if __name__ == '__main__':
     from msIO.features.combined import FeatureCombined
     # path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
     # path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
-    path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B\SIRIUS'
+    # path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B\SIRIUS'
+    path_full_folder = r"C:\Users\yanni\Downloads\sirius"
 
     # test_folder_1 = os.path.join(path_test_folder, '1_timsTOF_combined_re.sirius_1')
     # props = read_compound_info(test_folder_1)
 
-    sr = SiriusImportManager(path_folder_export=path_full_folder, export_tag='all')
+    sr = SiriusImportManager(path_folder_export=path_full_folder)
 
     f = sr.get_feature(2)
 

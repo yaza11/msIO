@@ -64,9 +64,11 @@ class MgfImportManager(BaseLib, FeatureManager):
 
         self.df_features: pd.DataFrame = pd.DataFrame(entries)
         # self.df_features.set_index('feature_id')
-        if ('rt_minutes' not in self.df_features.columns) and ('rt_seconds' in self.df_features.columns):
+        if (('rt_minutes' not in self.df_features.columns)
+                and ('rt_seconds' in self.df_features.columns)):
             self.df_features.loc[:, 'rt_minutes'] = self.df_features.rt_seconds / 60
-        elif ('rt_seconds' not in self.df_features.columns) and ('rt_minutes' in self.df_features.columns):
+        elif (('rt_seconds' not in self.df_features.columns)
+              and ('rt_minutes' in self.df_features.columns)):
             self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
 
         self._feature_ids: np.ndarray[int] = np.unique(_feature_ids)
@@ -94,7 +96,11 @@ class MgfImportManager(BaseLib, FeatureManager):
             props.pop('feature_id')
             ms_specs.append(MsSpec(peaks=peaks, **props))
 
-        f = FeatureMgf(feature_id=f_id, polarity=df_sub.polarity.iat[0], ms_specs=ms_specs)
+        f = FeatureMgf(
+            feature_id=f_id,
+            polarity=df_sub.polarity.iat[0],
+            ms_specs=ms_specs
+        )
         self._features[f_id] = f
 
     def get_ms2(
@@ -113,9 +119,10 @@ class MgfImportManager(BaseLib, FeatureManager):
 
 
 if __name__ == '__main__':
-    path_mgf_sirius = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.sirius.mgf"
+    # path_mgf_sirius = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.sirius.mgf"
+    path_mgf = r"C:\Users\Yannick Zander\Downloads\and a backup.gnps.mgf"
 
-    mgf = MgfImportManager(path_mgf_sirius)
+    mgf = MgfImportManager(path_mgf)
 
     # peak_lists = mgf.get_ms2(mz=636.53379)
     #

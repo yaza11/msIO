@@ -11,7 +11,7 @@ from tqdm import tqdm
 from msIO import PeakList
 from msIO.environmental.sample import Sample
 from msIO.list_of_ions.read_mca import MoleculeAnnotation
-from msIO.metrics import cosine_similarity_sim, cosine_similarity_forward, cosine_similarity_backward
+from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
 from sqlalchemy import select, inspect
@@ -410,6 +410,7 @@ class Library(FeatureManagerDB):
             max_ms2_dmz_da: float = 10e-3,
             min_ms2_score: float | None = 0.7,
             metric: Callable[[PeakList | None, PeakList | None], float] | Literal['cosine_fwd', 'cosine_bwd', 'cosine_sim'] = 'cosine_sim',
+            return_nhits_ms2: bool = False,
             require_ms2: bool = False,
     ):
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
@@ -444,7 +445,7 @@ class Library(FeatureManagerDB):
 
         if isinstance(metric, str):
             if metric == 'cosine_sim':
-                metric = cosine_similarity_sim
+                metric = cosine_similarity_sym
             elif metric == 'cosine_fwd':
                 metric = cosine_similarity_forward
             elif metric == 'cosine_backward':
@@ -473,7 +474,7 @@ class Library(FeatureManagerDB):
         ):
             matches_per_meas: list[dict] = []
             for f_id_lib in f_id_libs:
-                ms2_score = metric(matched_ms2_spectra_lib.get(f_id_lib), ms2_measured, max_ms2_dmz_da)
+                ms2_score, *n_hits_ms2 = metric(matched_ms2_spectra_lib.get(f_id_lib), ms2_measured, max_ms2_dmz_da, return_nhits=return_nhits_ms2)
                 # only add the entry if ms2 is not required or score is above the threshold
                 if (require_ms2 and np.isnan(ms2_score)) or (ms2_score < min_ms2_score):
                     continue
@@ -488,6 +489,8 @@ class Library(FeatureManagerDB):
                     dmz_ppm= dmz / mz_lib * 1e6,
                     source_library=ann_libs.get(f_id_lib, 'unknown'),
                 )
+                if return_nhits_ms2:
+                    match['n_hits_ms2'] = n_hits_ms2[0]
                 matches_per_meas.append(match)
 
             matches.append(matches_per_meas)
@@ -504,7 +507,7 @@ if __name__ == '__main__':
     # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
     # meas_file = r"C:\Users\yanni\Downloads\Guaymas new method height recursive\SQL\database.db"
     # lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
-    lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sqlite"
+    lib_file = r"C:\Users\Yannick Zander\Downloads\library_ipl.sqlite"
     meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db"
 
     # target_mzs = [653.68090, 667.69624, 802.74909, 1073.80953] * 100
@@ -536,7 +539,8 @@ if __name__ == '__main__':
         max_ms2_dmz_da=10e-3,
         min_ms2_score=.7,
         max_dmz_da=5e-3,
-        require_ms2=False
+        require_ms2=False,
+        return_nhits_ms2=True
     )
     t1 = time.time()
 
@@ -564,10 +568,9 @@ if __name__ == '__main__':
     #     ...
     #
     plt.close()
-    plot_matches(7)
+    plot_matches(4719)
     plt.show()
 
-    lib.get_ms_spectrum(3, level=2).plot()
 
     # assign certainty levels
     ...
