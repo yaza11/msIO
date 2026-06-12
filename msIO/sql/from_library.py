@@ -13,13 +13,13 @@ from msIO.sql.session import initiate_db, get_sessionmaker
 
 COMMIT_AT_LEAST_EVERY = 1_000
 
-db_file =  r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
+db_file =  r"C:\Users\Yannick Zander\Downloads\library_complete.sqlite"
 folder_julius = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments'
 
 library_files = [
-    r"C:\Users\Yannick Zander\Downloads\Archlips_M+1_Full_spectral_library.msp",
     r"C:\Users\Yannick Zander\Downloads\Archlips_High_confidence_spectral_library.msp",
-    r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
+    r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp",
+    r"C:\Users\Yannick Zander\Downloads\Archlips_M+1_Full_spectral_library.msp",
     # r"C:\Users\yanni\Downloads\Archlips_M+1_Full_spectral_library.msp",
     # r"C:\Users\yanni\Downloads\Archlips_High_confidence_spectral_library.msp",
     # r"C:\Users\yanni\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
@@ -40,6 +40,7 @@ with Session() as session:
         low_memory = library_file.endswith('Archlips_M+1_Full_spectral_library.msp')
         # low_memory = True
         msp_manager = MSPReader(library_file, splitter_peaks_list=None, low_memory=low_memory)
+        lib_name = library_file.split('\\')[-1].split('.')[0]
 
         for i in tqdm(
                 range(msp_manager.n_features),
@@ -55,6 +56,7 @@ with Session() as session:
             else:
                 idx = msp_manager.df_features.index[i]
             f = msp_manager.create_feature(idx, f_id)
+            f.metaboscape.annotation_type = lib_name
             session.add(f)
             f_id += 1
             uncommited_features += 1

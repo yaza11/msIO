@@ -1,12 +1,17 @@
+from functools import cached_property
 from typing import Any, Iterable, Literal, Callable
 
 import numpy as np
 import pandas as pd
+import logging
 from matplotlib import pyplot as plt
+from rdkit.Contrib.Glare.glare import Library
+from tqdm import tqdm
 
 from msIO import PeakList
 from msIO.environmental.sample import Sample
-from msIO.metrics import cosine_similarity_sim
+from msIO.list_of_ions.read_mca import MoleculeAnnotation
+from msIO.metrics import cosine_similarity_sim, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
 from sqlalchemy import select, inspect
@@ -17,6 +22,8 @@ from msIO.features.metaboscape import FeatureMetaboScape, Intensity
 from msIO.features.mgf import FeatureMgf, MsSpec
 from msIO.features.sirius import CompoundCandidate, FormulaCandidate
 from msIO.features.combined import FeatureCombined
+
+logger = logging.getLogger(__name__)
 
 
 def eager_options_for(cls, strategy="selectin", maxdepth=10, seen=None):
@@ -81,11 +88,11 @@ class FeatureManagerDB:
             attrs = session.execute(select(obj)).scalars().all()
         return attrs
 
-    @property
+    @cached_property
     def feature_ids(self) -> list[int]:
         return self._get_all_attributes_from(FeatureCombined.feature_id)
 
-    @property
+    @cached_property
     def mzs(self) -> dict[int, float]:
         # cannot use properties directly
         stmt = (
@@ -121,25 +128,25 @@ class FeatureManagerDB:
                 d[f] = missing_value
         return d
 
-    @property
+    @cached_property
     def molecular_mass(self) -> dict[int, float]:
         return self._get_dict_for_attributes(FeatureMetaboScape, 'M_metaboscape')
 
-    @property
+    @cached_property
     def retention_times_in_seconds(self):
         return self._get_dict_for_attributes(FeatureMetaboScape, 'rt_seconds')
 
-    @property
+    @cached_property
     def collisional_cross_sections(self):
         return self._get_dict_for_attributes(FeatureMetaboScape, 'CCS')
 
-    @property
+    @cached_property
     def formula_metaboscape(self):
         return self._get_dict_for_attributes(
             FeatureMetaboScape, 'formula_metaboscape'
         )
 
-    @property
+    @cached_property
     def formula_sirius(self):
         stmt = (
             select(FormulaCandidate).filter(FormulaCandidate.formula_rank == 1)
@@ -152,7 +159,7 @@ class FeatureManagerDB:
                 formulas[o.feature_id] = o.formula_sirius
         return formulas
 
-    @property
+    @cached_property
     def name_sirius(self):
         """
         Returns dict mapping feature id to a sirius name based on the best formula. If there is no name for the
@@ -167,7 +174,7 @@ class FeatureManagerDB:
                 names[o.feature_id] = o.name_sirius
         return names
 
-    @property
+    @cached_property
     def names_metaboscape(self) -> dict[int, str]:
         return self.get_all_attributes_from(FeatureMetaboScape, 'name_metaboscape')
 
@@ -203,8 +210,8 @@ class FeatureManagerDB:
         stmt = (
             select(FeatureMgf.feature_id, PeakList)
             .select_from(MsSpec)
-            .join(FeatureMgf, MsSpec.feature_mgf_id == FeatureMgf.id)
-            .join(PeakList, MsSpec.peaks_id == PeakList.id)
+            .join(MsSpec.feature_mgf)
+            .join(MsSpec.peaks)
             .options(selectinload(PeakList.peaks))
             .where(
                 FeatureMgf.feature_id.in_(feature_ids),
@@ -240,11 +247,9 @@ class FeatureManagerDB:
 
         out: dict[int, PeakList] = {}
         for feature_id_chunk in feature_id_chunks:
-            print('num f_ids:', len(feature_id_chunk))
             out |= self._get_ms_spectra_limited_variable_number(
                 feature_id_chunk, level
             )
-            print('num spectra after:', len(out))
 
         return out
 
@@ -320,6 +325,12 @@ class FeatureManagerDB:
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
+    def add_annotations_from_library(self, library: "Library" = None, library_file: str | None = None):
+        assert (library is None) ^ (library_file is None), 'provide either library or library_file'
+        if library is not None:
+            library = Library(library_file)
+        ...
+
 
 class Library(FeatureManagerDB):
     """
@@ -333,7 +344,7 @@ class Library(FeatureManagerDB):
     _mzs_sorted: np.ndarray[float] = None
     _f_ids_sorted: np.ndarray[int] = None
 
-    @property
+    @cached_property
     def names(self) -> dict[int, str]:
         stmt = (
             select(CompoundCandidate)
@@ -392,158 +403,174 @@ class Library(FeatureManagerDB):
 
     def find_matches(
             self,
-            mzs: Iterable[float],
-            max_dmz_da: float=None,
+            mzs: Iterable[float] | dict[int, float],
+            max_dmz_da: float = None,
             max_dmz_ppm: float | int = None,
-            ms2: Iterable[PeakList] = None,
+            ms2_spectra: Iterable[PeakList | None] | dict[int, PeakList | None] = None,
             max_ms2_dmz_da: float = 10e-3,
-            min_sim: float = 0.7,
+            min_ms2_score: float | None = 0.7,
             metric: Callable[[PeakList | None, PeakList | None], float] | Literal['cosine_fwd', 'cosine_bwd', 'cosine_sim'] = 'cosine_sim',
+            require_ms2: bool = False,
     ):
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
             'provide either max_dmz_da or max_dmz_ppm (but not both)'
+        if (as_dicts := isinstance(mzs, dict)) and (ms2_spectra is not None) and (not isinstance(ms2_spectra, dict)):
+            raise ValueError('If mzs are provided as dict, ms2 must also be a dict')
 
-        f_ids_matched_precursor: list[np.ndarray[int]] = self.find_matches_precursor(
-            mzs, max_dmz_da, max_dmz_ppm
+        if as_dicts:
+            mz_ids: list[int] = list(mzs.keys())
+            mzs: list[float] = list(mzs.values())
+            if ms2_spectra is not None:
+                ms2_spectra: list[PeakList | None] = [ms2_spectra.get(f_id) for f_id in mz_ids]
+        else:
+            assert len(ms2_spectra) == len(mzs), \
+                'ms2 and mzs must have the same length (can set ms2 to None for some mzs, if not available)'
+            mz_ids = None
+
+        logger.info(f'finding precursor matches')
+        matched_f_ids: list[list[int]] = self.find_matches_precursor(
+            mzs=mzs, max_dmz_da=max_dmz_da, max_dmz_ppm=max_dmz_ppm
         )
+        logger.info(f'found matches for {sum(1 for mchs in matched_f_ids if len(mchs) > 0):_} features')
 
-        # pre-load ms2 spectra of all matched features
-        f_ids_matched_unique: set[int] = set()
-        for _f_ids_matched_precursor in f_ids_matched_precursor:
-            f_ids_matched_unique.update(_f_ids_matched_precursor)
-
-        matches_ms2: dict[int, PeakList] = self.get_ms_spectra(
-            list(f_ids_matched_unique), level=2
-        )
-
-        # score
-        ...
-
-        # return features above thr
-        ...
-
-        # # retrieve the feature ids and load the complete objects
-        # options = []
-        #
-        # # Only load MS2 spectra + peaks if actually needed
-        # if ms2 is not None:
-        #     options.append(
-        #         selectinload(
-        #             FeatureMgf.ms_specs.and_(MsSpec.ms_level == 2)
-        #         )
-        #         .selectinload(MsSpec.peaks)
-        #         .selectinload(PeakList.peaks)
-        #     )
-        #
-        # stmt = (
-        #     select(FeatureMgf, CompoundCandidate)
-        #     .outerjoin(
-        #         CompoundCandidate,
-        #         CompoundCandidate.feature_id == FeatureMgf.combined_feature_id
-        #     )
-        #     .where(FeatureMgf.mz.between(mz_lower, mz_upper))
-        # )
-        #
-        # with self.session_maker() as session:
-        #     matches = session.execute(stmt).unique().all()
-
-        def add_notnone_attributes(obj):
-            return {
-                k: v
-                for k, v in obj.__dict__.items()
-                if (v is not None) and (not k.startswith('_'))
-            }
-
-        matches_transformed: list[dict] = []
-        for match in matches:
-            feature_mgf, compound_candidate = match
-            # all features that are not None
-            out = add_notnone_attributes(compound_candidate) | add_notnone_attributes(feature_mgf)
-
-            if ms2 is not None:
-                ms2_refs: list[PeakList] = [
-                    ms_spec.peaks
-                    for ms_spec in feature_mgf.ms_specs
-                    if ms_spec.ms_level == 2
-                ]
-                if len(ms2_refs) == 0:  # no ms2 information
-                    continue
-                score = cosine_similarity_sim(ms2_refs[0], ms2, max_ms2_dmz_da)
-                if score < min_cos_sim:
-                    continue
+        # no ms2 spectra provided, so we can not score them
+        if ms2_spectra is None:
+            if as_dicts:
+                out = {mz_id: matches_per_meas for mz_id, matches_per_meas in zip(mz_ids, matched_f_ids) if
+                       len(matches_per_meas) > 0}
+                return out
             else:
-                score = None
+                return matched_f_ids
 
-            matches_transformed.append(out)
-            out['dmz'] = feature_mgf.mz - mz
-            if score is not None:
-                out['cosine_score'] = score
+        if isinstance(metric, str):
+            if metric == 'cosine_sim':
+                metric = cosine_similarity_sim
+            elif metric == 'cosine_fwd':
+                metric = cosine_similarity_forward
+            elif metric == 'cosine_backward':
+                metric = cosine_similarity_backward
+            else:
+                raise ValueError(f'Unknown metric {metric}')
 
-        return matches_transformed
+        # fetch ms2 spectra of library matches
+        matched_f_ids_raveled: set[int] = set()
+        for _f_ids_matched_precursor in matched_f_ids:
+            matched_f_ids_raveled.update(_f_ids_matched_precursor)
+
+        logger.info(f'loading lib ms2 spectra for {len(matched_f_ids_raveled):_} features')
+        matched_ms2_spectra_lib: dict[int, PeakList] = self.get_ms_spectra(list(matched_f_ids_raveled), level=2)
+
+        ann_libs: dict[int, str] = self._get_dict_for_attributes(FeatureMetaboScape, 'annotation_type')
+
+        # assign scores
+        # ms2_scores: list[list[float]] = []
+        # matched_f_ids_filtered: list[list[int]] = []
+        matches: list[list[dict]] = []
+        for mz_meas, ms2_measured, f_id_libs in tqdm(
+                zip(mzs, ms2_spectra, matched_f_ids),
+                desc='assigning ms2 scores',
+                total=len(mzs)
+        ):
+            matches_per_meas: list[dict] = []
+            for f_id_lib in f_id_libs:
+                ms2_score = metric(matched_ms2_spectra_lib.get(f_id_lib), ms2_measured, max_ms2_dmz_da)
+                # only add the entry if ms2 is not required or score is above the threshold
+                if (require_ms2 and np.isnan(ms2_score)) or (ms2_score < min_ms2_score):
+                    continue
+
+                mz_lib = self.mzs[f_id_lib]
+                match: dict = dict(
+                    feature_id=f_id_lib,
+                    name=self.names.get(f_id_lib),
+                    formula=self.formula_metaboscape.get(f_id_lib),
+                    ms2_score=ms2_score,
+                    dmz_da= (dmz := (mz_meas - mz_lib)) *1e3,
+                    dmz_ppm= dmz / mz_lib * 1e6,
+                    source_library=ann_libs.get(f_id_lib, 'unknown'),
+                )
+                matches_per_meas.append(match)
+
+            matches.append(matches_per_meas)
+
+        if as_dicts:
+            out = {mz_id: matches_per_meas for mz_id, matches_per_meas in zip(mz_ids, matches) if len(matches_per_meas) > 0}
+            return out
+        return matches
 
 
 if __name__ == '__main__':
+    import time
     # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
     # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
     # meas_file = r"C:\Users\yanni\Downloads\Guaymas new method height recursive\SQL\database.db"
-    lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
+    # lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sql"
+    lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sqlite"
     meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db"
-
 
     # target_mzs = [653.68090, 667.69624, 802.74909, 1073.80953] * 100
     # target_names = ['Archaeol(20:0_20:0)', 'MeO-Archaeol(20:0_20:0)', 'Rib-Archaeol(20:0_20:0)', 'SQ-Archaeol(25:3_30:5)'] * 100
 
-    lib = Library(lib_file)
-    mzs_lib = lib.mzs
-    names_lib = lib.names
+    logging.basicConfig(level=logging.INFO)
 
-    meas = FeatureManagerDB(meas_file)
-    target_mzs = list(meas.mzs.values())
-    names_metaboscape = meas.names_metaboscape
-    target_names = [names_metaboscape[f_id] for f_id in meas.mzs]
-
-    matched_f_ids: list[list[int]] = lib.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
-    matched_names = [[names_lib[f_id] for f_id in f_ids] for f_ids in matched_f_ids]
-
-    self = lib
-
-    f_ids_matched_precursor: list[list[int]] = self.find_matches_precursor(target_mzs, max_dmz_da=5e-3)
-
-    # pre-load ms2 spectra of all matched features
-    f_ids_matched_unique: set[int] = set()
-    for _f_ids_matched_precursor in f_ids_matched_precursor:
-        f_ids_matched_unique.update(_f_ids_matched_precursor)
-
-    matches_ms2: dict[int, PeakList] = self.get_ms_spectra(list(f_ids_matched_unique), level=2)
-
-    meas_f_with_match = [f_id for f_id, matched_f_id in zip(meas.feature_ids, matched_f_ids) if len(matched_f_id) > 0]
-    meas_ms2: dict[int, PeakList] = meas.get_ms_spectra(meas_f_with_match, level=2)
-
-    # assign scores
-    ms2_scores = [
-        [cosine_similarity_sim(matches_ms2.get(f_id_lib), meas_ms2.get(f_id_meas), 10e-3) for f_id_lib in f_id_libs]
-        for f_id_meas, f_id_libs in zip(meas.feature_ids, matched_f_ids)
-    ]
-
-    import time
     t0 = time.time()
+    print('loading library')
+    lib = Library(lib_file)
 
-    # ms2_dummy = PeakList(mzs=[100, 200, 300], intensities=[0.1, 0.2, 0.3])
-    #
-    # for target_mz, target_name in tqdm(zip(target_mzs, target_names), total=len(target_mzs)):
-    #     matches = lib.find_matches(target_mz, max_dmz_da=5e-3, min_cos_sim=0)
-    #     for match in matches:
-    #         if match['name_sirius'].strip() == target_name:
-    #             break
-    #     else:
-    #         print(f'target name {target_name} is not in the matches')
+    print('loading measurement')
+    meas = FeatureManagerDB(meas_file)
+    mzs_meas: dict[int, float] = meas.mzs
+    ms2_meas = meas.get_ms_spectra(meas.feature_ids, level=2)
 
+    # matches = find_matches(
+    #     lib,
+    #     mzs_meas,
+    #     ms2_spectra=ms2_meas,
+    #     max_ms2_dmz_da=10e-3,
+    #     min_ms2_score=.7,
+    #     max_dmz_da=5e-3,
+    #     require_ms2=False
+    # )
+    matches: dict[int, list[dict]] = lib.find_matches(
+        mzs_meas,
+        ms2_spectra=ms2_meas,
+        max_ms2_dmz_da=10e-3,
+        min_ms2_score=.7,
+        max_dmz_da=5e-3,
+        require_ms2=False
+    )
     t1 = time.time()
 
-    print(f'{t1 - t0:.2f} seconds')
+    print(f'finding annotations took {(t1 - t0) / 60:.2f} minutes')
 
-    # match = matches[0]
+    def plot_matches(f_id_meas):
+        matched_anns: list[dict] = matches[f_id_meas]
 
+        fig, axs = plt.subplots(nrows=len(matched_anns) + 1, ncols=1, sharex=True)
+
+        ax=axs[0]
+        ms2_meas[f_id_meas].plot(ax)
+        ax.set_title(f'name MetaboScape: {meas.names_metaboscape[f_id_meas]}')
+
+        for i, matched_ann in enumerate(matched_anns):
+            ax = axs[i+1]
+            ms = lib.get_ms_spectrum(matched_ann['feature_id'], level=2)
+            if ms is None:
+                continue
+            ms.plot(ax)
+            ax.set_title(f'name: {matched_ann['name']}, ppm: {matched_ann["dmz_ppm"]:.1f}, MS score: {matched_ann["ms2_score"]:.2f}')
+        return fig, axs
+    #
+    # def to_mca() -> list[MoleculeAnnotation]:
+    #     ...
+    #
+    plt.close()
+    plot_matches(7)
+    plt.show()
+
+    lib.get_ms_spectrum(3, level=2).plot()
+
+    # assign certainty levels
+    ...
 
 
     # from msIO.features.combined import FeatureCombined

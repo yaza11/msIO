@@ -218,12 +218,14 @@ class MSPReader(BaseLib):
                 return None
             return val
 
-        row: dict = self.df_features.loc[idx, :].to_dict()
+        row: dict = {k.lower(): v for k, v in self.df_features.loc[idx, :].items()}
 
         if idx in self.peak_list:
             peaks: PeakList = self.peak_list.get(idx)
-            ms_level = row.get('ms_level', 2)
-            ms_spec = MsSpec(peaks=peaks, ms_level=ms_level)
+            ms_level = row.get('ms_level')
+            if ms_level is None:
+                ms_level = 2
+            ms_spec = MsSpec(peaks=peaks, ms_level=int(ms_level))
             ms_specs = [ms_spec]
         else:
             ms_specs = None
@@ -239,7 +241,7 @@ class MSPReader(BaseLib):
             CCS = get_attr_or_none('ccs'),
             mz_meas=get_attr_or_none('mz'),
             adduct_metaboscape=get_attr_or_none('ion'),
-            formula_metaboscape=get_attr_or_none('Formula'),
+            formula_metaboscape=get_attr_or_none('formula'),
             # abuse annotation source for comment
             annotation_source=get_attr_or_none('comment'),
         )
@@ -247,8 +249,8 @@ class MSPReader(BaseLib):
         compound_candidate = CompoundCandidate(
             feature_id=feature_id,
             name_sirius=get_attr_or_none('name'),
-            xlogp = get_attr_or_none('logP'),
-            inchi = get_attr_or_none('INCHI'),
+            xlogp = get_attr_or_none('logp'),
+            inchi = get_attr_or_none('inchi'),
             smiles = get_attr_or_none('smiles'),
             confidence_rank = get_attr_or_none('confidence_level')  # higher rank/level is better
         )
@@ -289,9 +291,9 @@ if __name__ == '__main__':
     # rdr = MSPReader(path_file, low_memory=True)
     # rdr.read_file()
 
-    rdr2 = MSPReader(path_file, low_memory=True)
-    for i in tqdm(range(rdr2.n_features)):
-        rdr2.read_next()
-    print(rdr2.df_features.T)
+    rdr = MSPReader(path_file, low_memory=False)
+    # for i in tqdm(range(rdr2.n_features)):
+    #     rdr2.read_next()
+    # print(rdr2.df_features.T)
 
-    # f = rdr.get_feature(rdr.df_features.index[0])
+    f = rdr.create_feature(rdr.df_features.index[0])
