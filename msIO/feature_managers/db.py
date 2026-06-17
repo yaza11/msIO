@@ -356,6 +356,14 @@ class Library(FeatureManagerDB):
                 names[o.feature_id] = o.name_sirius
         return names
 
+    @cached_property
+    def smiles(self) -> dict[int, str]:
+        return self.get_all_attributes_from(CompoundCandidate, 'smiles')
+
+    @cached_property
+    def inchis(self) -> dict[int, str]:
+        return self.get_all_attributes_from(CompoundCandidate, 'inchi')
+
     def _set_sorted_mzs(self):
         _mzs: np.ndarray[float] = np.asarray(list(self.mzs.values()))
         o = np.argsort(_mzs)
