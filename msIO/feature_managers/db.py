@@ -493,7 +493,7 @@ class Library(FeatureManagerDB):
                     name=self.names.get(f_id_lib),
                     formula=self.formula_metaboscape.get(f_id_lib),
                     ms2_score=ms2_score,
-                    dmz_da= (dmz := (mz_meas - mz_lib)) *1e3,
+                    dmz_mda= (dmz := (mz_meas - mz_lib)) * 1e3,
                     dmz_ppm= dmz / mz_lib * 1e6,
                     source_library=ann_libs.get(f_id_lib, 'unknown'),
                 )
