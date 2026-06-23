@@ -514,7 +514,7 @@ class Library(FeatureManagerDB):
 
     def plot_compound_overview(self, f_id, axs: tuple[plt.Axes, plt.Axes] = None, **kwargs):
         if axs is None:
-            _, ax = plt.subplots(nrows=2)
+            _, axs = plt.subplots(nrows=2)
 
         if self.smiles.get(f_id) is not None:
             mol = Chem.MolFromSmiles(self.smiles[f_id])

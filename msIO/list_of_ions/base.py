@@ -136,11 +136,16 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
 
         return cls(mzs, ints, annotations=comments, name=name)
 
-    def plot(self, ax: plt.Axes = None) -> plt.Axes:
+    def plot(self, ax: plt.Axes = None, as_mirror: bool=False, **kwargs_stem) -> plt.Axes:
         if ax is None:
             _, ax = plt.subplots()
 
-        ax.stem(self.mzs, self.intensities, markerfmt='')
+        if as_mirror:
+            ints = [-i for i in self.intensities]
+        else:
+            ints = self.intensities
+
+        ax.stem(self.mzs, ints, markerfmt=kwargs_stem.pop('markerfmt', ''), **kwargs_stem)
         ax.set_xlabel('m/z in Da')
         ax.set_ylabel('Intensity')
 
