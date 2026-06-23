@@ -249,7 +249,8 @@ class FeatureManagerDB:
         ]
 
         out: dict[int, PeakList] = {}
-        for feature_id_chunk in feature_id_chunks:
+        n_chunks = len(feature_id_chunks)
+        for feature_id_chunk in tqdm(feature_id_chunks, desc=f'loading ms spectra for {len(feature_ids):_} features', total=n_chunks, disable=n_chunks < 2):
             out |= self._get_ms_spectra_limited_variable_number(
                 feature_id_chunk, level
             )
