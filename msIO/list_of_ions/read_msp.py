@@ -73,6 +73,7 @@ def _parse_lines(lines: list[str]) -> dict[str, str | int | float]:
         if ':' not in l:
             continue
         k, v = l.split(':', 1)
+        v = v.lstrip().rstrip()  # remove leading and trailing whitespace
         pyk = msp_key_to_py.get(k, k)
         v = converts.get(pyk, default_str)(v)
         e[pyk] = v
