@@ -278,8 +278,14 @@ class FeatureManagerDB:
         f_1 = self.get_feature(f_id1)
         f_2 = self.get_feature(f_id2)
 
-        ms1: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_1.mgf.ms_specs}
-        ms2: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_2.mgf.ms_specs}
+        if f_1.mgf is None:
+            ms1 = {}
+        else:
+            ms1: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_1.mgf.ms_specs}
+        if f_2.mgf is None:
+            ms2 = {}
+        else:
+            ms2: dict[int, PeakList] = {ms_spec.ms_level: ms_spec.peaks for ms_spec in f_2.mgf.ms_specs}
 
         # MS/MS mirror plot
         if 2 in ms1:
@@ -308,7 +314,7 @@ class FeatureManagerDB:
             ccs=[round(f_1.metaboscape.CCS, 1), round(f_2.metaboscape.CCS, 1)],
             mz=[round(f_1.metaboscape.mz_meas, 4), round(f_2.metaboscape.mz_meas, 4)],
             main_ion=[f_1.metaboscape.adduct, f_2.metaboscape.adduct],
-            M=[round(f_1.metaboscape.M_metaboscape, 4), round(f_1.metaboscape.M_metaboscape, 4)],
+            M=[round(f_1.metaboscape.M_metaboscape, 4), round(f_2.metaboscape.M_metaboscape, 4)],
             annotation=[f_1.metaboscape.name_metaboscape, f_2.metaboscape.name_metaboscape],
         ))
         df.index = [f_id1, f_id2]
