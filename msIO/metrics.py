@@ -1,3 +1,5 @@
+from typing import Literal
+
 import numpy as np
 
 from msIO import PeakList
@@ -43,6 +45,23 @@ def cosine_similarity_sym(a, b, max_dmz_da, return_nhits: bool = False) -> tuple
     if return_nhits:
         return score, min(n_hits_fwd[0], n_hits_bwd[0])
     return score,
+
+
+def cosine_similarity_neutral_losses(
+        a, b, pre_mz_a, pre_mz_b, max_dmz_da,
+        return_nhits: bool = False, direction: Literal['forward', 'backward', 'symmetrical'] = 'symmetrical'
+) -> tuple[float] | tuple[float, int]:
+    a_neut = PeakList(mzs=[i - pre_mz_a for i in a.mzs], intensities=a.intensities)
+    b_neut = PeakList(mzs=[i - pre_mz_b for i in b.mzs], intensities=b.intensities)
+    if direction == 'forward':
+        return cosine_similarity_forward(a_neut, b, max_dmz_da, return_nhits=return_nhits)
+    elif direction == 'backward':
+        return cosine_similarity_backward(a_neut, b, max_dmz_da, return_nhits=return_nhits)
+    elif direction == 'symmetrical':
+        return cosine_similarity_sym(a_neut, b, max_dmz_da, return_nhits=return_nhits)
+    else:
+        raise ValueError(f'Unknown direction {direction}')
+
 
 
 if __name__ == '__main__':
