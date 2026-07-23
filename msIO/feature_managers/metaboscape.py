@@ -7,7 +7,14 @@ from msIO.environmental.sample import Sample
 
 
 class MetaboscapeImportManager(FeatureManager):
-    def __init__(self, path_metaboscape_export_file: str, path_metaboscape_clipboard_file: str = None):
+    _df: pd.DataFrame = None
+    path_metaboscape_export_file: str = None
+    _sample_name_to_sample: dict[str, Sample] = None
+
+    def __init__(self, path_metaboscape_export_file: str = None, path_metaboscape_clipboard_file: str = None):
+        if path_metaboscape_export_file is None:
+            return
+
         self.path_metaboscape_export_file = path_metaboscape_export_file
 
         _df = pd.read_csv(path_metaboscape_export_file).rename(columns=METABOSCAPE_CSV_RENAME_COLUMNS)
@@ -26,6 +33,13 @@ class MetaboscapeImportManager(FeatureManager):
             self._add_from_clipboard(path_metaboscape_clipboard_file)
 
         self._sample_name_to_sample: dict[str, Sample] = {}
+
+    @classmethod
+    def from_dataframe(cls, df: pd.DataFrame) -> 'MetaboscapeImportManager':
+        new = cls()
+        new._df = df
+        new._sample_name_to_sample = {}
+        return new
 
     def _add_from_clipboard(self, path_file: str):
         # rows should match 1 to 1
