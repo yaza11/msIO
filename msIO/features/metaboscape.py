@@ -33,7 +33,7 @@ class Intensity(SqlBaseClass, FeatureBaseClass):
 
     id: Mapped[int] = mapped_column(primary_key=True)
 
-    value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    value: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
 
     feature_id: Mapped[int] = mapped_column(ForeignKey("metaboscape_features.feature_id"), nullable=False)
     feature: Mapped["FeatureMetaboScape"] = relationship(back_populates="intensities")
