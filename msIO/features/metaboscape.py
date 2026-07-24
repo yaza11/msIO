@@ -91,7 +91,7 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                 v = 0 if not (v > 0) else int(v)
                 if k not in sample_name_to_sample:
                     sample_name_to_sample[k] = Sample(sample_name=k)
-                processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v))
+                processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v, feature_id=ser.feature_id))
             else:
                 if k in METABOSCAPE_CSV_RENAME_COLUMNS.values():
                     k_new = k
