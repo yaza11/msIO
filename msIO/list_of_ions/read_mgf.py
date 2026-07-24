@@ -70,6 +70,9 @@ class MgfImportManager(BaseLib, FeatureManager):
         elif (('rt_seconds' not in self.df_features.columns)
               and ('rt_minutes' in self.df_features.columns)):
             self.df_features.loc[:, 'rt_seconds'] = self.df_features.rt_minutes * 60
+        if 'polarity' not in self.df_features.columns:
+            assert 'charge' in self.df_features.columns, 'charge or polarity attribute is required'
+            self.df_features.loc[:, 'polarity'] = self.df_features.charge.apply(lambda x: "POSITIVE" if x > 0 else "NEGATIVE")
 
         self._feature_ids: np.ndarray[int] = np.unique(_feature_ids)
         self._peak_dict: dict[tuple[int, int, str], PeakList] = dict(zip(
