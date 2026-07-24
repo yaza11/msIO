@@ -92,7 +92,7 @@ class MgfImportManager(BaseLib, FeatureManager):
                 continue
             peaks = self._peak_dict[key]
             props = row.to_dict()
-            props.pop('polarity')
+            props.pop('polarity', None)
             props.pop('feature_id')
             ms_specs.append(MsSpec(peaks=peaks, **props))
 
