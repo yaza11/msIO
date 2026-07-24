@@ -5,13 +5,19 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from msIO.feature_managers._read_mzio_graphml_as_xml import get_node_and_edge_data
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.gnps import FeatureGnpsNode, GNPS_RENAME
 
 
 class GnpsImportManager(FeatureManager):
+    _df_nodes: pd.DataFrame = None
+
     def __init__(self, path_gnps_folder=None, path_file_gnps_graphml=None):
-        assert (path_gnps_folder is not None) or (path_file_gnps_graphml is not None)
+        # assert (path_gnps_folder is not None) or (path_file_gnps_graphml is not None)
+        if (path_gnps_folder is None) and (path_file_gnps_graphml is None):
+            return
+
         if path_file_gnps_graphml is None:
             path_file_gnps_graphml = self._find_gnps_file(path_gnps_folder)
         self.path_file_gnps_graphml = path_file_gnps_graphml
@@ -27,6 +33,24 @@ class GnpsImportManager(FeatureManager):
             .rename(columns=GNPS_RENAME | dict(name='feature_id'))
             .set_index('feature_id')
         )
+
+    @classmethod
+    def from_mzmine(cls, path_file_graphml: str):
+        new = cls()
+        new.path_file_gnps_graphml = path_file_graphml
+
+        node_data, _ = get_node_and_edge_data(path_file_graphml)
+        node_data = (
+            node_data
+            .loc[node_data.type == "Feature", ['id', 'rt', 'cluster_id', 'neutral_mass']]
+            .rename(columns={'id': 'feature_id', 'rt': 'rt_seconds', 'cluster_id': 'cluster_label', 'neutral_mass': 'M_gnps'})
+            .astype({'feature_id': int, 'cluster_label': int, 'rt_seconds': float, 'M_gnps': float})
+            .set_index('feature_id')
+        )
+        node_data.loc[:, 'rt_seconds'] = node_data.rt_seconds * 60
+
+        new._df_nodes = node_data
+        return new
 
     @staticmethod
     def _find_gnps_file(path_gnps_folder):
@@ -48,8 +72,10 @@ class GnpsImportManager(FeatureManager):
 
 
 if __name__ == '__main__':
-    path_gnps_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\GNPS\gnps.graphml"
+    # path_gnps_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\GNPS\gnps.graphml"
+    # gnps = GnpsImportManager(path_file_gnps_graphml=path_gnps_file)
 
-    gnps = GnpsImportManager(path_file_gnps_graphml=path_gnps_file)
+    path_gnps_file2 = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine_networking_new_fbmn.graphml"
+    gnps2 = GnpsImportManager.from_mzmine(path_gnps_file2)
 
-    f = gnps.get_feature(1)
+    # f = gnps.get_feature(1)
