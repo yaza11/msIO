@@ -1,6 +1,5 @@
 import json
 
-from dataclasses import dataclass
 from typing import Self, Optional
 
 from sqlalchemy import Integer, Float, String, ForeignKey
