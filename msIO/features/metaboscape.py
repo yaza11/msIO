@@ -35,7 +35,7 @@ class Intensity(SqlBaseClass, FeatureBaseClass):
 
     value: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
-    feature_id: Mapped[int] = mapped_column(ForeignKey("metaboscape_features.id"), nullable=False)
+    feature_id: Mapped[int] = mapped_column(ForeignKey("metaboscape_features.feature_id"), nullable=False)
     feature: Mapped["FeatureMetaboScape"] = relationship(back_populates="intensities")
 
     sample_id: Mapped[int] = mapped_column(ForeignKey("samples.id", ondelete="CASCADE"), nullable=False)
@@ -91,7 +91,7 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                 v = 0 if not (v > 0) else int(v)
                 if k not in sample_name_to_sample:
                     sample_name_to_sample[k] = Sample(sample_name=k)
-                processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v, feature_id=ser.feature_id))
+                processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v))
             else:
                 if k in METABOSCAPE_CSV_RENAME_COLUMNS.values():
                     k_new = k
