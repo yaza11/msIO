@@ -88,7 +88,7 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
                 # set nan values to 0
                 if isinstance(v, str):
                     v = float(v)
-                v = 0 if not (v > 0) else int(v)
+                v = 0. if not (v > 0) else float(v)
                 if k not in sample_name_to_sample:
                     sample_name_to_sample[k] = Sample(sample_name=k)
                 processed['intensities'].append(Intensity(sample=sample_name_to_sample[k], value=v))
