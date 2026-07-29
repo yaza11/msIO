@@ -4,6 +4,7 @@ from typing import Self, Iterable, Optional, Union
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+from LipidCalculator.util.spectrum import recursively_merge_peaks_to_resolution
 from sqlalchemy import ForeignKey, String, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from enum import Enum as PyEnum
@@ -57,6 +58,20 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
     ) -> None:
         self.name = name
         self.peaks = self._build_peaks(mzs=mzs, intensities=intensities, annotations=annotations, peaks=peaks)
+
+    def merge_to_resolution(self, mz_resolution) -> None:
+        mzs_merged, intensities_merged = recursively_merge_peaks_to_resolution(self.mzs, self.intensities, resolution=mz_resolution)
+        self.peaks = [PeakFeature(mz=mz, intensity=intensity) for mz, intensity in zip(mzs_merged, intensities_merged)]
+
+    def merge_with(self, other: Self, mz_resolution: int) -> Self:
+        """Return new instance where intensities of the peaks are merged. Information about id, names and peak annotations are lost"""
+        # create peak list that includes peaks from both peak lists
+        peaks = self.peaks + other.peaks
+        # new instance of self
+        new = self.__class__(peaks=peaks)
+        # merge peaks below resolution
+        new.merge_to_resolution(mz_resolution)
+        return new
 
     def _build_peaks(
             self,

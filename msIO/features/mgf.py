@@ -14,32 +14,38 @@ ION_PREFERENCES = ['[M+H]+', '[M+Na]+', '[M+K]+', '[M+NH4]+', '[M]+', '[M+H+H]2+
 
 
 def parse_ion_props(inpt: list[str]) -> dict:
+    """Parse mgf entry"""
+    do_nothing = lambda x: x
+    keyword_to_label_and_conversion = {
+        'feature_id': ('feature_id', int),
+        'pepmass': ('mz', float),
+        'mslevel': ('ms_level', int),
+        'charge': ('charge', lambda c: int(c[-1] + c[:-1])),  # e.g. 2- --> -2
+        'rtinminutes': ('rt_minutes', float),
+        'rtinseconds': ('rt_seconds', float),
+        'polarity': ('polarity', lambda p: p.lower()),
+        'ionmode': ('polarity', lambda p: p.lower()),
+        'ion': ('ion', do_nothing),
+        'adduct': ('ion', do_nothing),
+        'title': ('title', do_nothing),
+        'ccs': ('ccs', float),
+        'spectype': ('spectrum_type', do_nothing),
+        'collisionenergy': ('collision_energy', do_nothing),
+        'scans': ('num_scans', int),
+    }
+
     kwargs: dict[str, int | float | str] = {}
+
     for line in inpt:
-        if line.startswith('FEATURE_ID'):
-            kwargs['feature_id'] = int(line.split('=')[1])
-        elif line.startswith('PEPMASS'):
-            kwargs['mz'] = float(line.split('=')[1])
-        elif line.startswith('MSLEVEL'):
-            kwargs['ms_level'] = int(line.split('=')[1])
-        elif line.startswith('CHARGE'):
-            # sign is trailing
-            charge = line.split('=')[1].strip('\n')
-            sign = charge[-1]
-            mag = charge[:-1]
-            kwargs['charge'] = int(sign + mag)
-        elif line.startswith('POLARITY'):
-            kwargs['polarity'] = line.split('=')[1].strip('\n').lower()
-        elif line.startswith('ION'):
-            kwargs['ion'] = line.split('=')[1].strip('\n')
-        elif line.startswith('RTINMINUTES'):
-            kwargs['rt_minutes'] = float(line.split('=')[1])
-        elif line.startswith('RTINSECONDS'):
-            kwargs['rt_seconds'] = float(line.split('=')[1])
-        elif line.startswith('TITLE'):
-            kwargs['title'] = line.split('=', 1)[1]
-        else:
+        # e.g. CCS=350.07224 or PEPMASS=1821.95234
+        if '=' not in line:  # peak list
             continue
+        key, val = line.split('=', 1)
+        # strip whitespaces
+        key = key.strip().lower()
+        val = val.strip().strip('\n')
+        label, func = keyword_to_label_and_conversion.get(key, (key, do_nothing))
+        kwargs[label] = func(val)
     return kwargs
 
 
@@ -103,7 +109,9 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
 
     @classmethod
     def from_lines(cls, inpt: list[str]) -> Self:
-        return cls(**parse_ion_props(inpt))
+        # filter out properties that are accepted by object
+        entries = {k: v for k, v in parse_ion_props(inpt) if k in cls.__annotations__}
+        return cls(**entries)
 
     def __post_init__(self) -> None:
         """Set properties from preferred ion"""
