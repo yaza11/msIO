@@ -15,7 +15,6 @@ from tqdm import tqdm
 from msIO import PeakList
 from msIO.environmental.sample import Sample
 from msIO.feature_managers.util_library import peaklist_to_spectrum
-from msIO.list_of_ions.read_mca import MoleculeAnnotation
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only

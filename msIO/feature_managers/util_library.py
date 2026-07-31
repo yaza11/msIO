@@ -1,10 +1,8 @@
 import numpy as np
 from matchms import Spectrum
-from matchms.filtering import normalize_intensities
-from matchms.similarity import ModifiedCosineGreedy, CosineGreedy, NeutralLossesCosine
+from matchms.similarity import ModifiedCosineGreedy
 
 from msIO import PeakList
-from msIO.feature_managers.db import Library, FeatureManagerDB
 
 
 def peaklist_to_spectrum(
@@ -38,34 +36,11 @@ def peaklist_to_spectrum(
     return Spectrum(mz=mzs, intensities=intensities, metadata=metadata)
 
 
-def modified_cosine_greedy_score(
-        spec1: PeakList | None,
-        spec2: PeakList | None,
-        max_dmz_da: float = 10e-3,
-        return_nhits: bool = False,
-        precursor_mz1: float = None,
-        precursor_mz2: float = None,
-) -> float | tuple[float, int]:
-    """
-    Modified cosine similarity (greedy matching version).
-    Requires precursor_mz for both spectra.
-    """
-    if spec1 is None or spec2 is None:
-        return (np.nan, 0) if return_nhits else np.nan
-
-    # Convert to matchms Spectrum
-    s1 = peaklist_to_spectrum(spec1, precursor_mz=precursor_mz1)
-    s2 = peaklist_to_spectrum(spec2, precursor_mz=precursor_mz2)
-
-    if s1 is None or s2 is None:
-        return (np.nan, 0) if return_nhits else np.nan
-
-    # Compute modified cosine
-    similarity = ModifiedCosine(tolerance=max_dmz_da)
-    return similarity.pair(s1, s2)
-
 
 if __name__ == '__main__':
+    from matchms.similarity import CosineGreedy, NeutralLossesCosine
+    from msIO.feature_managers.db import Library, FeatureManagerDB
+
     path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features.db"
     dbm = FeatureManagerDB(path_file)
 
