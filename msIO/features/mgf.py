@@ -177,4 +177,3 @@ if __name__ == '__main__':
     spec = MsSpec(mz=100, ms_level=1, charge=1, peaks=pl)
 
     mgf_feat = FeatureMgf(polarity='pos', ms_specs=[spec])
-

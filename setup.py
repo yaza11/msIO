@@ -2,13 +2,13 @@ from setuptools import setup, find_packages
 
 setup(
     name='msIO',
-    version='0.0.68',
+    version='0.0.69',
     url='',
     author='Yannick Zander',
     description='Reading and writing functions for different mass spectrometry '
                 'related file types',
     packages=find_packages(),
-    install_requires=['numpy', 'matplotlib', 'pandas', 'tqdm', 'sqlalchemy', 'networkx'],
+    install_requires=['numpy', 'matplotlib', 'pandas', 'tqdm', 'sqlalchemy', 'networkx', 'matchms'],
 )
 
 # pip install git+https://github.com/yaza11/LipidCalculator.git

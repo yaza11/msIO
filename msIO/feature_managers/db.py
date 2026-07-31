@@ -6,6 +6,7 @@ import pandas as pd
 import logging
 
 from LipidCalculator.rdkit.plotting import mplt_mol
+from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
 from rdkit import Chem
 from rdkit.Contrib.Glare.glare import Library
@@ -13,6 +14,7 @@ from tqdm import tqdm
 
 from msIO import PeakList
 from msIO.environmental.sample import Sample
+from msIO.feature_managers.util_library import peaklist_to_spectrum
 from msIO.list_of_ions.read_mca import MoleculeAnnotation
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
@@ -81,7 +83,7 @@ class FeatureManagerDB:
         with self.session_maker() as session:
             obj = session.execute(
                 select(FeatureCombined)
-                .where(FeatureCombined.id == feature_id)
+                .where(FeatureCombined.feature_id == feature_id)
                 .options(*opts)
             ).unique().scalar_one()
         return obj
@@ -427,7 +429,7 @@ class Library(FeatureManagerDB):
             ms2_spectra: Iterable[PeakList | None] | dict[int, PeakList | None] = None,
             max_ms2_dmz_da: float = 10e-3,
             min_ms2_score: float | None = 0.7,
-            metric: Callable[[PeakList | None, PeakList | None], float] | Literal['cosine_fwd', 'cosine_bwd', 'cosine_sim'] = 'cosine_sim',
+            metric: Callable[[PeakList | None, PeakList | None], float] | Literal['cosine_fwd', 'cosine_bwd', 'cosine_sim', 'modified_cosine_greedy'] = 'cosine_sim',
             return_nhits_ms2: bool = False,
             require_ms2: bool = False,
     ):
@@ -468,6 +470,13 @@ class Library(FeatureManagerDB):
                 metric = cosine_similarity_forward
             elif metric == 'cosine_backward':
                 metric = cosine_similarity_backward
+            elif metric == 'modified_cosine_greedy':
+                # need to convert to matchms SpectrumType
+                def metric(a, b, max_dmz_da, return_hits):
+                    sim = ModifiedCosineGreedy(tolerance=max_dmz_da)
+                    sa = peaklist_to_spectrum(a, precursor_mz=mz_meas)
+                    sb = peaklist_to_spectrum(b, precursor_mz=mz_lib)
+                    return sim.pair(sa, sb)
             else:
                 raise ValueError(f'Unknown metric {metric}')
 
@@ -492,12 +501,15 @@ class Library(FeatureManagerDB):
         ):
             matches_per_meas: list[dict] = []
             for f_id_lib in f_id_libs:
-                ms2_score, *n_hits_ms2 = metric(matched_ms2_spectra_lib.get(f_id_lib), ms2_measured, max_ms2_dmz_da, return_nhits=return_nhits_ms2)
+                mz_lib = self.mzs[f_id_lib]
+                ms2_score, *n_hits_ms2 = metric(
+                    matched_ms2_spectra_lib.get(f_id_lib), ms2_measured, max_ms2_dmz_da, return_nhits=return_nhits_ms2
+                )
                 # only add the entry if ms2 is not required or score is above the threshold
                 if (require_ms2 and np.isnan(ms2_score)) or (ms2_score < min_ms2_score):
                     continue
 
-                mz_lib = self.mzs[f_id_lib]
+
                 match: dict = dict(
                     feature_id=f_id_lib,
                     name=self.names.get(f_id_lib),
