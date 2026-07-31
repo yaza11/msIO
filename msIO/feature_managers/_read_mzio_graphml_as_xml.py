@@ -54,8 +54,11 @@ def collapse_ms2_similarities_to_compounds(comp_to_f_ids: dict[int, list[int]], 
     )
 
 
-
 if __name__ == '__main__':
     file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine_networking_new_iimn.graphml"
 
     node_data, edge_data = get_node_and_edge_data(file)
+
+    sims_long = get_modified_cosine_similarities(edge_data)
+
+    df = sims_long
