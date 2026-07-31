@@ -475,7 +475,10 @@ class Library(FeatureManagerDB):
                     sim = ModifiedCosineGreedy(tolerance=max_dmz_da)
                     sa = peaklist_to_spectrum(a, precursor_mz=mz_meas)
                     sb = peaklist_to_spectrum(b, precursor_mz=mz_lib)
-                    return sim.pair(sa, sb)
+                    res = sim.pair(sa, sb)
+                    if return_nhits:
+                        return res['score'], res['matches']
+                    return res['score'],
             else:
                 raise ValueError(f'Unknown metric {metric}')
 
@@ -558,8 +561,8 @@ if __name__ == '__main__':
     import time
     # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
     # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
-    # meas_file = r"C:\Users\yanni\Downloads\Guaymas new method height recursive\SQL\database.db"
-    lib_file = r"C:\Users\Yannick Zander\Downloads\library_complete.sqlite"
+    meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features.db"
+    lib_file = r"C:\Users\Yannick Zander\Downloads\library_arch_mp1_msdial_jul.sqlite"
     # lib_file = r"C:\Users\Yannick Zander\Downloads\library_ipl.sqlite"
 
     lib = Library(lib_file)

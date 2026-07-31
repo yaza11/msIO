@@ -69,3 +69,6 @@ if __name__ == '__main__':
 
     neut = NeutralLossesCosine(tolerance=10e-3)
     neut_score = neut.pair(s1, s2)
+
+    score, *nhits = mod_score['score'], mod_score['matches']
+
