@@ -472,6 +472,8 @@ class Library(FeatureManagerDB):
             elif metric == 'modified_cosine_greedy':
                 # need to convert to matchms SpectrumType
                 def metric(a, b, max_dmz_da, return_nhits):
+                    if (a is None) or (b is None):
+                        return float('nan'), 0 if return_nhits else float('nan'),
                     sim = ModifiedCosineGreedy(tolerance=max_dmz_da)
                     sa = peaklist_to_spectrum(a, precursor_mz=mz_meas)
                     sb = peaklist_to_spectrum(b, precursor_mz=mz_lib)
