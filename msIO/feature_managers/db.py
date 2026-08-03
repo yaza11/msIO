@@ -474,7 +474,7 @@ class Library(FeatureManagerDB):
                 def metric(a, b, max_dmz_da, return_nhits):
                     if (a is None) or (b is None):
                         return float('nan'), 0 if return_nhits else float('nan'),
-                    sim = ModifiedCosineGreedy(tolerance=max_dmz_da)
+                    sim = ModifiedCosineGreedy(tolerance=max_dmz_da, intensity_power=.5)
                     sa = peaklist_to_spectrum(a, precursor_mz=mz_meas)
                     sb = peaklist_to_spectrum(b, precursor_mz=mz_lib)
                     res = sim.pair(sa, sb)
