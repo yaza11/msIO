@@ -310,12 +310,17 @@ class FeatureManagerDB:
         axs[1].set_xlabel('m/z in Da')
 
         # table with properties
+        def round_if_not_none(val, n_decimals=0):
+            if val is None:
+                return float('nan')
+            return round(val, n_decimals)
+
         df = pd.DataFrame(dict(
-            rt_min=[round(f_1.metaboscape.rt_seconds / 60, 2), round(f_2.metaboscape.rt_seconds / 60, 2)],
-            ccs=[round(f_1.metaboscape.CCS, 1), round(f_2.metaboscape.CCS, 1)],
-            mz=[round(f_1.metaboscape.mz_meas, 4), round(f_2.metaboscape.mz_meas, 4)],
+            rt_min=[round_if_not_none(f_1.metaboscape.rt_seconds / 60, 2), round_if_not_none(f_2.metaboscape.rt_seconds / 60, 2)],
+            ccs=[round_if_not_none(f_1.metaboscape.CCS, 1), round_if_not_none(f_2.metaboscape.CCS, 1)],
+            mz=[round_if_not_none(f_1.metaboscape.mz_meas, 4), round_if_not_none(f_2.metaboscape.mz_meas, 4)],
             main_ion=[f_1.metaboscape.adduct, f_2.metaboscape.adduct],
-            M=[round(f_1.metaboscape.M_metaboscape, 4), round(f_2.metaboscape.M_metaboscape, 4)],
+            M=[round_if_not_none(f_1.metaboscape.M_metaboscape, 4), round_if_not_none(f_2.metaboscape.M_metaboscape, 4)],
             annotation=[f_1.metaboscape.name_metaboscape, f_2.metaboscape.name_metaboscape],
         ))
         df.index = [f_id1, f_id2]
