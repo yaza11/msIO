@@ -71,6 +71,8 @@ class MsSpec(SqlBaseClass, FeatureBaseClass):
 class PolarityEnum(PyEnum):
     POS = "pos"
     NEG = "neg"
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
 
 
 class FeatureMgf(SqlBaseClass, FeatureBaseClass):
