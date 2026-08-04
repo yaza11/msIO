@@ -23,8 +23,8 @@ def parse_ion_props(inpt: list[str]) -> dict:
         'charge': ('charge', lambda c: int(c[-1] + c[:-1])),  # e.g. 2- --> -2
         'rtinminutes': ('rt_minutes', float),
         'rtinseconds': ('rt_seconds', float),
-        'polarity': ('polarity', lambda p: p.lower()),
-        'ionmode': ('polarity', lambda p: p.lower()),
+        'polarity': ('polarity', lambda p: p.lower()[:3]),
+        'ionmode': ('polarity', lambda p: p.lower()[:3]),
         'ion': ('ion', do_nothing),
         'adduct': ('ion', do_nothing),
         'title': ('title', do_nothing),
