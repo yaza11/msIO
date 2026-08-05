@@ -34,7 +34,9 @@ class MgfImportManager(BaseLib, FeatureManager):
 
     def __init__(self, path_mgf: str, accumulate_spectra: bool = True, mz_resolution: int = None):
         """
-        Accumulate spectra: if this is set to True, will merge spectra to the provided resolution
+        accumulate_spectra: if this is set to True, will merge spectra to the provided resolution
+        mz_resolution: mz/dmz up to which peaks are distinguishable (used for accumulating spectra)
+        filter_ms1_spectra: if this is set to True,
         """
 
         self.peak_list: list[PeakList] = []

@@ -151,16 +151,66 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
 
         return cls(mzs, ints, annotations=comments, name=name)
 
-    def plot(self, ax: plt.Axes = None, as_mirror: bool=False, **kwargs_stem) -> plt.Axes:
+    def filter(
+            self,
+            mz_limits: tuple[float | None, float | None] = None,
+            intensity_limits: tuple[float | None, float | None] = None, inplace: bool = False
+    ) -> Self | None:
+        def replace_none_in_limits(limits: tuple | None) -> tuple:
+            if limits is None:
+                return -float('inf'), float('inf')
+            elif limits[0] is None:
+                return -float('inf'), limits[1]
+            elif limits[1] is None:
+                return limits[0], float('inf')
+            else:
+                return limits
+
+        mz_limits = replace_none_in_limits(mz_limits)
+        intensity_limits = replace_none_in_limits(intensity_limits)
+
+        new_peaks = [
+            p for p in self.peaks
+            if (mz_limits[0] <= p.mz <= mz_limits[1]) and (intensity_limits[0] <= p.intensity <= intensity_limits[1])
+        ]
+        if not inplace:
+            return self.__class__(peaks=new_peaks, name=self.name)
+
+        self.peaks = new_peaks
+        return None
+
+    def plot(
+            self,
+            ax: plt.Axes = None,
+            as_mirror: bool=False,
+            normalize_intensities: bool=False,
+            annotate_peaks: bool=True,
+            annotation_relative_cutoff=.01,
+            **kwargs_stem
+    ) -> plt.Axes:
         if ax is None:
             _, ax = plt.subplots()
 
         if as_mirror:
             ints = [-i for i in self.intensities]
+            ints_max = min(ints)
         else:
             ints = self.intensities
+            ints_max = max(ints)
+        if normalize_intensities:
+            ints = [i / ints_max * 1000 for i in ints]
+            ints_max = -1000 if as_mirror else 1000
 
         ax.stem(self.mzs, ints, markerfmt=kwargs_stem.pop('markerfmt', ''), **kwargs_stem)
+        # add annotations
+        if annotate_peaks:
+            for mz, int, ann in zip(self.mzs, ints, self.annotations):
+                if int / ints_max < annotation_relative_cutoff:
+                    continue
+                if ann is None:
+                    ann = str(round(mz, 4))
+                ax.annotate(ann, xy=(mz, int), horizontalalignment='center', verticalalignment='bottom', rotation=90)
+
         ax.set_xlabel('m/z in Da')
         ax.set_ylabel('Intensity')
 

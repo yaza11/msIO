@@ -182,27 +182,6 @@ class FeatureManagerDB:
     def names_metaboscape(self) -> dict[int, str]:
         return self.get_all_attributes_from(FeatureMetaboScape, 'name_metaboscape')
 
-    def get_ms_spectrum(self, feature_id: int, level: int) -> PeakList:
-        # fetch ms spectrum sql file for specified feature id and level (1 for isotope pattern, 2 for fragment spectrum)
-        if level not in (1, 2):
-            raise ValueError("level must be 1 or 2")
-
-        stmt = (
-            select(PeakList)
-            .select_from(MsSpec)
-            .join(MsSpec.feature_mgf)
-            .join(MsSpec.peaks)
-            .options(selectinload(PeakList.peaks))
-            .where(
-                FeatureMgf.feature_id == feature_id,
-                MsSpec.ms_level == level,
-                MsSpec.peaks_id.is_not(None),
-            )
-        )
-
-        with self.session_maker() as session:
-            return session.scalars(stmt).first()
-
     def _get_ms_spectra_limited_variable_number(
             self,
             feature_ids: list[int],
@@ -236,7 +215,9 @@ class FeatureManagerDB:
             self,
             feature_ids: list[int],
             level: int,
-            max_spectra_per_query: int = 20_000
+            max_spectra_per_query: int = 20_000,
+            mz_limits: tuple = None,
+            intensity_limits: tuple = None
     ) -> dict[int, PeakList]:
         level = int(level)
 
@@ -251,12 +232,46 @@ class FeatureManagerDB:
 
         out: dict[int, PeakList] = {}
         n_chunks = len(feature_id_chunks)
-        for feature_id_chunk in tqdm(feature_id_chunks, desc=f'loading ms spectra for {len(feature_ids):_} features', total=n_chunks, disable=n_chunks < 2):
+        for feature_id_chunk in tqdm(
+                feature_id_chunks,
+                desc=f'loading ms spectra for {len(feature_ids):_} features',
+                total=n_chunks,
+                disable=n_chunks < 2
+        ):
             out |= self._get_ms_spectra_limited_variable_number(
                 feature_id_chunk, level
             )
 
+        # apply filters
+        for feature_id, peak_list in out.items():
+            peak_list.filter(mz_limits=mz_limits, intensity_limits=intensity_limits, inplace=True)
+
         return out
+
+    def get_ms_spectra_precursor_filtered(
+            self,
+            feature_ids: list[int],
+            level: int,
+            mz_precursor_window_da=4,
+            **kwargs
+    ) -> dict[int, PeakList]:
+        assert 'mz_limits' not in kwargs, 'mz_limits should not be provided for precursor filtering, set the mz_precursor_window_da instead'
+        # query all and then filter, this is faster than querying for each feature individually
+        out = self.get_ms_spectra(feature_ids, level, **kwargs)
+        for f_id, peak_list in out.items():
+            precursor_mz = self.mzs[f_id]
+            if level == 2:  # window defines tolerance around precursor mz
+                mz_limits = (precursor_mz - mz_precursor_window_da, precursor_mz + mz_precursor_window_da)
+            elif level == 1:  # window defines upper window away from precursor mz
+                mz_limits = (precursor_mz - .5, precursor_mz + mz_precursor_window_da)
+            else:
+                raise ValueError(f'level must be 1 or 2, not {level}')
+            peak_list.filter(mz_limits=mz_limits, inplace=True)
+        return out
+
+    def get_ms_spectrum(self, feature_id: int, level: int, **kwargs) -> PeakList:
+        # fetch ms spectrum sql file for specified feature id and level (1 for isotope pattern, 2 for fragment spectrum)
+        return self.get_ms_spectra([feature_id], level, **kwargs)[feature_id]
 
     def get_intensities(self, feature_id) -> dict[str, int]:
         """
