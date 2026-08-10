@@ -261,7 +261,7 @@ class FeatureManagerDB:
         for f_id, peak_list in out.items():
             precursor_mz = self.mzs[f_id]
             if level == 2:  # window defines tolerance around precursor mz
-                mz_limits = (precursor_mz - mz_precursor_window_da, precursor_mz + mz_precursor_window_da)
+                mz_limits = precursor_mz + mz_precursor_window_da, float('inf')
             elif level == 1:  # window defines upper window away from precursor mz
                 mz_limits = (precursor_mz - .5, precursor_mz + mz_precursor_window_da)
             else:
@@ -269,9 +269,9 @@ class FeatureManagerDB:
             peak_list.filter(mz_limits=mz_limits, inplace=True)
         return out
 
-    def get_ms_spectrum(self, feature_id: int, level: int, **kwargs) -> PeakList:
+    def get_ms_spectrum(self, feature_id: int, level: int, **kwargs) -> PeakList | None:
         # fetch ms spectrum sql file for specified feature id and level (1 for isotope pattern, 2 for fragment spectrum)
-        return self.get_ms_spectra([feature_id], level, **kwargs)[feature_id]
+        return self.get_ms_spectra([feature_id], level, **kwargs).get(feature_id)
 
     def get_intensities(self, feature_id) -> dict[str, int]:
         """
