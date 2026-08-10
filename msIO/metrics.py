@@ -7,7 +7,7 @@ from msIO import PeakList
 
 def cosine_similarity_forward(ref: PeakList, meas: PeakList, max_dmz_da: float, return_nhits: bool = False) -> tuple[float] | tuple[float, int]:
     """Match peaks of b in a (a is therefore the reference)"""
-    if (ref is None) or (meas is None):
+    if (ref is None) or (meas is None) or (len(ref.mzs) == 0) or (len(meas.mzs) == 0):
         if return_nhits:
             return float('nan'), 0
         return float('nan'),
