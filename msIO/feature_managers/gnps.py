@@ -23,16 +23,16 @@ class GnpsImportManager(FeatureManager):
         self.path_file_gnps_graphml = path_file_gnps_graphml
 
         G: nx.Graph = nx.read_graphml(self.path_file_gnps_graphml)
-        keep_columns_to_dtype = {'name': int, 'componentindex': int, 'RTConsensus': float, 'precursor mass': float}
+        keep_columns_to_dtype = {'componentindex': int, 'RTConsensus': float, 'precursor mass': float}
         nodes_data = dict(map(lambda x: (int(x[0]), x[1]), G.nodes.data()))
         self._df_nodes = (
             pd.DataFrame(nodes_data)
             .loc[list(keep_columns_to_dtype), :]
             .T
             .astype(keep_columns_to_dtype)
-            .rename(columns=GNPS_RENAME | dict(name='feature_id'))
-            .set_index('feature_id')
+            .rename(columns=GNPS_RENAME)
         )
+        self._df_nodes.index.name = 'feature_id'
 
     @classmethod
     def from_mzmine(cls, path_file_graphml: str):
