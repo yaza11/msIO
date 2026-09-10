@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='msIO',
-    version='0.0.82',
+    version='0.0.83',
     url='',
     author='Yannick Zander',
     description='Reading and writing functions for different mass spectrometry '

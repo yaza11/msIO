@@ -1,3 +1,4 @@
+import logging
 import os
 
 import numpy as np
@@ -27,6 +28,7 @@ RENAME_FORMULA_IDENTIFICATIONS = {
     'lipidClass': 'lipid_class',
     'retentionTimeInSeconds': 'rt_seconds',
     'featureId': 'feature_id',
+    'mappingFeatureId': 'feature_id',
     'id': 'sirius_compound_folder'
 }
 
@@ -48,6 +50,7 @@ RENAME_COMPOUND_IDENTIFICATIONS = {
     'xlogp': 'xlogp',
     'retentionTimeInSeconds': 'rt_seconds',
     'featureId': 'feature_id',
+    'mappingFeatureId': 'feature_id',
     'id': 'sirius_compound_folder'
 }
 
@@ -73,7 +76,10 @@ RENAME_CANOPUS_FORMULA_SUMMARY = {
     'ClassyFire#superclass probability': 'cf_superclass_probability',
     'ClassyFire#all classifications': 'cf_path',
     'featureId': 'feature_id',
+    'mappingFeatureId': 'feature_id',
 }
+
+logger = logging.getLogger(__name__)
 
 
 def read_compound_info(path_compound_folder: str) -> dict[str, str]:
@@ -113,7 +119,13 @@ class SiriusImportManager(FeatureManager):
         def process_with_rename(table_name: str, renamer: dict[str, str]) -> None:
             table = self._tables[table_name]
             table.rename(columns=renamer, inplace=True)
-            table = table.loc[:, list(renamer.values())]
+            expected_columns = set(renamer.values())
+            actual_columns = set(table.columns) & expected_columns
+            missing_columns = expected_columns - actual_columns
+            if len(missing_columns) > 0:
+                logger.warning(f'Missing columns: {missing_columns} for {table_name}')
+
+            table = table.loc[:, list(actual_columns)]
             self._tables[table_name] = table
 
         files = [get_sirius_file_for_tag(f, self.export_tag)
@@ -126,6 +138,15 @@ class SiriusImportManager(FeatureManager):
             )
             for name, file in zip(SIRIUS_FILE_NAMES, files) if os.path.exists(path_file := os.path.join(self.path_folder_export, file))
         }
+
+        # strip prefix 'SIRIUS_' that is sometimes added (depending on the version, I think)
+        for table_name, table in self._tables.items():
+            renamer: dict[str, str] = {c: c.replace('SIRIUS_', '') if c.startswith('SIRIUS_') else c for c in table.columns}
+            table.rename(columns=renamer, inplace=True)
+
+            # only need one, otherwise both will be renamed to feature_id below
+            if ('featureId' in table.columns) and ('mappingFeatureId' in table.columns):
+                table.drop(columns='mappingFeatureId', inplace=True)
 
         renamers = dict(zip(SIRIUS_FILE_NAMES, [RENAME_FORMULA_IDENTIFICATIONS, RENAME_COMPOUND_IDENTIFICATIONS, RENAME_CANOPUS_FORMULA_SUMMARY]))
         for n in self._tables:
@@ -142,13 +163,13 @@ if __name__ == '__main__':
     # path_test_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\test'
     # path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
     # path_full_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B\SIRIUS'
-    path_full_folder = r"C:\Users\yanni\Downloads\sirius"
+    path_full_folder = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine"
 
     # test_folder_1 = os.path.join(path_test_folder, '1_timsTOF_combined_re.sirius_1')
     # props = read_compound_info(test_folder_1)
 
     sr = SiriusImportManager(path_folder_export=path_full_folder)
 
-    f = sr.get_feature(2)
+    f = sr.get_feature(1)
 
     f2 = f.get_highest_scoring()
