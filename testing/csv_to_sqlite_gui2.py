@@ -1,4 +1,3 @@
-"""Written by Avin Jain"""
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox
