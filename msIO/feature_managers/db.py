@@ -9,7 +9,6 @@ from LipidCalculator.rdkit.plotting import mplt_mol
 from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
 from rdkit import Chem
-from rdkit.Contrib.Glare.glare import Library
 from tqdm import tqdm
 
 from msIO import PeakList
@@ -65,9 +64,12 @@ class FeatureManagerDB:
     Object for accessing and modifying a DB created with a ProjectImportManager
      instance
     """
+    path_file: str = None
+    _mzs_sorted: np.ndarray[float] = None
+    _f_ids_sorted: np.ndarray[int] = None
 
     def __init__(self, path_file_db: str):
-        self.path_file = path_file_db
+        self.path_file: str = path_file_db
 
     @property
     def session_maker(self) -> 'session_maker':
@@ -181,6 +183,51 @@ class FeatureManagerDB:
     @cached_property
     def names_metaboscape(self) -> dict[int, str]:
         return self.get_all_attributes_from(FeatureMetaboScape, 'name_metaboscape')
+
+    def _set_sorted_mzs(self):
+        _mzs: np.ndarray[float] = np.asarray(list(self.mzs.values()))
+        o = np.argsort(_mzs)
+        self._mzs_sorted = _mzs[o]
+        self._f_ids_sorted: np.ndarray[int] = np.asarray(list(self.mzs.keys()))[o]
+
+    @property
+    def f_ids_sorted(self) -> np.ndarray[int]:
+        if self._f_ids_sorted is None:
+            self._set_sorted_mzs()
+        return self._f_ids_sorted
+
+    @property
+    def mzs_sorted(self) -> np.ndarray[float]:
+        if self._mzs_sorted is None:
+            self._set_sorted_mzs()
+        return self._mzs_sorted
+
+    def find_matches_precursor(
+            self,
+            mzs: Iterable[float],
+            max_dmz_da: float = None,
+            max_dmz_ppm: float | int = None,
+    ) -> list[list[int]]:
+        """Returns the matched feature ids"""
+        assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
+            'provide either max_dmz_da or max_dmz_ppm (but not both)'
+
+        mzs = np.asarray(mzs)
+
+        if max_dmz_da is None:
+            max_dmz_da = mzs * (max_dmz_ppm * 1e-6)
+
+        # get all features that match the mz within the tolerance
+        idcs_left = np.searchsorted(self.mzs_sorted, mzs - max_dmz_da, side='right')
+        idcs_right = np.searchsorted(self.mzs_sorted, mzs + max_dmz_da, side='right')
+
+        f_ids: list[np.ndarray[int]] = [
+            self.f_ids_sorted[idx_left:idx_right]
+            for idx_left, idx_right in zip(idcs_left, idcs_right)
+        ]
+
+        # convert types
+        return [[int(f_id) for f_id in _f_ids] for _f_ids in f_ids]
 
     def _get_ms_spectra_limited_variable_number(
             self,
@@ -345,6 +392,8 @@ class FeatureManagerDB:
         # bar plot with intensities
         ints1 = {i.sample.sample_name: i.value for i in f_1.metaboscape.intensities}
         ints2 = {i.sample.sample_name: i.value for i in f_2.metaboscape.intensities}
+        if len(ints1) == 0 and len(ints2) == 0:
+            return fig, axs
         df = pd.DataFrame(data=[ints1, ints2], index=[f_id1, f_id2]).T
 
         df.plot.bar(rot=45, ax=axs[3])
@@ -369,11 +418,6 @@ class Library(FeatureManagerDB):
     merely necessary because the current architecture is used for turning msp
     libraries into sql files.
     """
-    _mzs: dict[int, float] = None
-    _names: dict[int, str] = None
-
-    _mzs_sorted: np.ndarray[float] = None
-    _f_ids_sorted: np.ndarray[int] = None
 
     @cached_property
     def names(self) -> dict[int, str]:
@@ -395,50 +439,11 @@ class Library(FeatureManagerDB):
     def inchis(self) -> dict[int, str]:
         return self.get_all_attributes_from(CompoundCandidate, 'inchi')
 
-    def _set_sorted_mzs(self):
-        _mzs: np.ndarray[float] = np.asarray(list(self.mzs.values()))
-        o = np.argsort(_mzs)
-        self._mzs_sorted = _mzs[o]
-        self._f_ids_sorted: np.ndarray[int] = np.asarray(list(self.mzs.keys()))[o]
-
-    @property
-    def f_ids_sorted(self) -> np.ndarray[int]:
-        if self._f_ids_sorted is None:
-            self._set_sorted_mzs()
-        return self._f_ids_sorted
-
-    @property
-    def mzs_sorted(self) -> np.ndarray[float]:
-        if self._mzs_sorted is None:
-            self._set_sorted_mzs()
-        return self._mzs_sorted
-
-    def find_matches_precursor(
-            self,
-            mzs: Iterable[float],
-            max_dmz_da: float = None,
-            max_dmz_ppm: float | int = None,
-    ) -> list[list[int]]:
-        """Returns the matched feature ids"""
-        assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
-            'provide either max_dmz_da or max_dmz_ppm (but not both)'
-
-        mzs = np.asarray(mzs)
-
-        if max_dmz_da is None:
-            max_dmz_da = mzs * (max_dmz_ppm * 1e-6)
-
-        # get all features that match the mz within the tolerance
-        idcs_left = np.searchsorted(self.mzs_sorted, mzs - max_dmz_da, side='right')
-        idcs_right = np.searchsorted(self.mzs_sorted, mzs + max_dmz_da, side='right')
-
-        f_ids: list[np.ndarray[int]] = [
-            self.f_ids_sorted[idx_left:idx_right]
-            for idx_left, idx_right in zip(idcs_left, idcs_right)
-        ]
-
-        # convert types
-        return [[int(f_id) for f_id in _f_ids] for _f_ids in f_ids]
+    def find_by_name(self, name: str, case_sensitive: bool = False, substring: bool = False):
+        t_name = lambda n: n if case_sensitive else n.lower()
+        cpr_f = lambda a, b: a in b if substring else a == b
+        name_l = t_name(name)
+        return [f_id for f_id, name in self.names.items() if cpr_f(name_l, t_name(name))]
 
     def find_matches(
             self,
