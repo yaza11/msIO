@@ -198,7 +198,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
             ints = self.intensities
             ints_max = max(ints)
         if normalize_intensities:
-            ints = [i / ints_max * 1000 for i in ints]
+            ints = [i / abs(ints_max) * 1000 for i in ints]
             ints_max = -1000 if as_mirror else 1000
 
         ax.stem(self.mzs, ints, markerfmt=kwargs_stem.pop('markerfmt', ''), **kwargs_stem)
@@ -209,7 +209,7 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
                     continue
                 if ann is None:
                     ann = str(round(mz, 4))
-                ax.annotate(ann, xy=(mz, int), horizontalalignment='center', verticalalignment='bottom', rotation=90)
+                ax.annotate(ann, xy=(mz, int), horizontalalignment='center', verticalalignment='top' if as_mirror else 'bottom', rotation=90)
 
         ax.set_xlabel('m/z in Da')
         ax.set_ylabel('Intensity')

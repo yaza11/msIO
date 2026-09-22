@@ -5,6 +5,7 @@ import numpy as np
 import pandas as pd
 import logging
 
+from LipidCalculator.isotopes.isotope_pattern import IsotopePattern
 from LipidCalculator.rdkit.plotting import mplt_mol
 from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
@@ -439,7 +440,12 @@ class Library(FeatureManagerDB):
     def inchis(self) -> dict[int, str]:
         return self.get_all_attributes_from(CompoundCandidate, 'inchi')
 
-    def find_by_name(self, name: str, case_sensitive: bool = False, substring: bool = False):
+    @cached_property
+    def adduct(self) -> dict[int, str]:
+        return self.get_all_attributes_from(FeatureMetaboScape, 'adduct_metaboscape')
+
+    def find_by_name(self, name: str, case_sensitive: bool = False, substring: bool = False) -> list[int]:
+        """Return a list of feature ids with names matching the criteria."""
         t_name = lambda n: n if case_sensitive else n.lower()
         cpr_f = lambda a, b: a in b if substring else a == b
         name_l = t_name(name)
@@ -538,7 +544,6 @@ class Library(FeatureManagerDB):
                 if (require_ms2 and np.isnan(ms2_score)) or (ms2_score < min_ms2_score):
                     continue
 
-
                 match: dict = dict(
                     feature_id=f_id_lib,
                     name=self.names.get(f_id_lib),
@@ -574,6 +579,57 @@ class Library(FeatureManagerDB):
         ms2: PeakList = self.get_ms_spectrum(f_id, level=2)
         ms2.plot(ax=axs[1])
         return axs
+
+    def plot_match(self, match_result: int | dict, meas: FeatureManagerDB, f_id_mas, fig=None, **kwargs):
+        if fig is None:
+            fig, axs = plt.subplots(nrows=4, layout='constrained')
+        else:
+            axs = fig.get_axes()
+
+        if isinstance(match_result, dict):
+            f_id_lib = match_result['feature_id']
+        else:
+            assert isinstance(match_result, int), 'match_result must be int or dict'
+            f_id_lib = match_result
+
+        # first plot: compound structure
+        # and second plot: ms2 spectrum
+        self.plot_compound_overview(f_id_lib, axs=axs[:2], **kwargs)
+        # add measured as mirror
+
+        ms2_measured: PeakList = meas.get_ms_spectrum(f_id_mas, level=2)
+        if ms2_measured is not None:
+            # scale to library
+
+            ms2_measured.plot(ax=axs[1], as_mirror=True, normalize_intensities=True)
+        # TODO: display cosine score, number of matched peaks, color according to match type, compound information next to structure
+        ...
+        # third plot: theoretical and measured MS1:
+        ms1_measured: PeakList = meas.get_ms_spectrum(f_id_mas, level=1)
+
+        formula: str = self.formula_metaboscape.get(f_id_lib)
+        adduct: str = self.adduct.get(f_id_lib)
+
+        if ms1_measured is not None:
+            ms1_measured.plot(ax=axs[2], as_mirror=True, normalize_intensities=True)
+        ms1_theo: IsotopePattern = IsotopePattern.from_formula(
+            formula=formula,
+            adduct=adduct,
+            mass_accuracy=kwargs.pop('mass_accuracy', None),
+            mass_resolution=kwargs.pop('mass_resolution', None),
+            merge_method=kwargs.pop('merge_method', 'none')
+        )
+        _i_max = max(ms1_theo.intensities)
+        ms1_theo.intensities = [i / _i_max * 1000 for i in ms1_theo.intensities]
+        ms1_theo.plot(ax=axs[2])
+
+        # TODO: fourth plot: table with properties
+        data = pd.DataFrame(index=['library', 'measured', 'difference'], columns=['feature id', 'm/z', 'RT', 'CCS'])
+        ...
+
+        fig.suptitle('')
+        return axs
+
 
     def compare_compounds(self, f_ids):
         fig, axs = plt.subplots(nrows=2, ncols=len(f_ids))
