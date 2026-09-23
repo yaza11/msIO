@@ -580,17 +580,11 @@ class Library(FeatureManagerDB):
         ms2.plot(ax=axs[1])
         return axs
 
-    def plot_match(self, match_result: int | dict, meas: FeatureManagerDB, f_id_mas, fig=None, **kwargs):
+    def plot_match(self, f_id_lib: int, meas: FeatureManagerDB, f_id_mas, match_result: dict | pd.Series=None, fig=None, **kwargs):
         if fig is None:
             fig, axs = plt.subplots(nrows=4, layout='constrained')
         else:
             axs = fig.get_axes()
-
-        if isinstance(match_result, dict):
-            f_id_lib = match_result['feature_id']
-        else:
-            assert isinstance(match_result, int), 'match_result must be int or dict'
-            f_id_lib = match_result
 
         # first plot: compound structure
         # and second plot: ms2 spectrum
@@ -629,7 +623,6 @@ class Library(FeatureManagerDB):
 
         fig.suptitle('')
         return axs
-
 
     def compare_compounds(self, f_ids):
         fig, axs = plt.subplots(nrows=2, ncols=len(f_ids))
