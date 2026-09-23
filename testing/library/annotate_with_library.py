@@ -14,6 +14,15 @@ from msIO.features.metaboscape import FeatureMetaboScape
 from msIO.features.sirius import CompoundCandidate
 from msIO.sql.session import get_sessionmaker
 
+
+def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
+    """Add a matched library entry to the measured database."""
+    ms2_score: float = results.loc[
+        (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib), 'ms2_score'
+    ].squeeze()
+    meas.add_annotations_from_library(lib, f_id_meas, f_id_lib, ms2_score)
+
+
 # get databases for measured data
 path_file_meas = r"C:\Users\Yannick Zander\Nextcloud2\Avin\database_gdgts.sqlite"
 # get databases for library used to annotate the data
@@ -71,38 +80,5 @@ f_id_lib = 27192
 # display matched results
 lib.plot_match(f_id_lib, meas, f_id_meas)
 
-annotations_to_add: dict[int, int] = {f_id_meas: f_id_lib}
-
 # add annotation to measured database:
-Session = get_sessionmaker(path_file_meas)
-
-with Session() as session:
-    opts = eager_options_for(FeatureCombined, strategy="selectin")
-    for f_id_meas, f_id_lib in tqdm(annotations_to_add.items(), desc='adding features to DB', total=len(annotations_to_add)):
-        f_meas = session.execute(
-                select(FeatureCombined)
-                .where(FeatureCombined.feature_id == f_id_meas)
-                .options(*opts)
-            ).unique().scalar_one()
-
-        match_properties: pd.Series = results.loc[
-            (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib)
-            , :
-        ].squeeze()
-
-        # add attributes from library match to measured feature
-        f_lib: FeatureCombined = lib.get_feature(f_id_lib)  # read only
-        # add as compound candidate
-        compound_candidate_lib: CompoundCandidate = f_lib.sirius.compound_candidates[0]
-        compound_candidate_meas: CompoundCandidate = CompoundCandidate(
-            num_adducts=1,
-            confidence_score=match_properties['ms2_score'],
-            adduct_sirius=f_lib.metaboscape.adduct_metaboscape,
-            name_sirius=compound_candidate_lib.name_sirius,
-            smiles=compound_candidate_lib.smiles,
-            inchi=compound_candidate_lib.inchi,
-            xlogp=compound_candidate_lib.xlogp,
-            sirius_compound_folder=f'manual_library_annotation from "{os.path.basename(path_file_lib)}" for feature "{f_id_lib}"'
-        )
-        f_meas.sirius.compound_candidates.append(compound_candidate_meas)
-    session.commit()
+add_annotation_to_measured_db(f_id_meas, f_id_lib, results, lib, meas)

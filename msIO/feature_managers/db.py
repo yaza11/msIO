@@ -1,3 +1,4 @@
+import os
 from functools import cached_property
 from typing import Any, Iterable, Literal, Callable
 
@@ -406,11 +407,30 @@ class FeatureManagerDB:
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
-    def add_annotations_from_library(self, library: "Library" = None, library_file: str | None = None):
-        assert (library is None) ^ (library_file is None), 'provide either library or library_file'
-        if library is not None:
-            library = Library(library_file)
-        ...
+    def add_annotations_from_library(self, library: "Library", f_id_meas: int, f_id_lib: int, ms2_score: float = None):
+        with self.session_maker() as session:  # cannot use get_feature because session needs to remain active
+            opts = eager_options_for(FeatureCombined, strategy="selectin")
+            f_meas: FeatureCombined = session.execute(
+                select(FeatureCombined)
+                .where(FeatureCombined.feature_id == f_id_meas)
+                .options(*opts)
+            ).unique().scalar_one()
+            # add attributes from library match to measured feature
+            f_lib: FeatureCombined = library.get_feature(f_id_lib)  # read only
+            # add as compound candidate
+            compound_candidate_lib: CompoundCandidate = f_lib.sirius.compound_candidates[0]
+            compound_candidate_meas: CompoundCandidate = CompoundCandidate(
+                num_adducts=1,
+                confidence_score=ms2_score,
+                adduct_sirius=f_lib.metaboscape.adduct_metaboscape,
+                name_sirius=compound_candidate_lib.name_sirius,
+                smiles=compound_candidate_lib.smiles,
+                inchi=compound_candidate_lib.inchi,
+                xlogp=compound_candidate_lib.xlogp,
+                sirius_compound_folder=f'manual_library_annotation from "{os.path.basename(lib.path_file)}" for feature "{f_id_lib}"'
+            )
+            f_meas.sirius.compound_candidates.append(compound_candidate_meas)
+            session.commit()
 
 
 class Library(FeatureManagerDB):
