@@ -427,7 +427,7 @@ class FeatureManagerDB:
                 smiles=compound_candidate_lib.smiles,
                 inchi=compound_candidate_lib.inchi,
                 xlogp=compound_candidate_lib.xlogp,
-                sirius_compound_folder=f'manual_library_annotation from "{os.path.basename(lib.path_file)}" for feature "{f_id_lib}"'
+                sirius_compound_folder=f'manual_library_annotation from "{os.path.basename(library.path_file)}" for feature "{f_id_lib}"'
             )
             f_meas.sirius.compound_candidates.append(compound_candidate_meas)
             session.commit()
