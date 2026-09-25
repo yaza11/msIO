@@ -6,10 +6,13 @@ import numpy as np
 import pandas as pd
 import logging
 
+from LipidCalculator import Adduct, CompoundDict
 from LipidCalculator.isotopes.isotope_pattern import IsotopePattern
 from LipidCalculator.rdkit.plotting import mplt_mol
+from matchms.filtering import normalize_intensities
 from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
+from matplotlib.gridspec import GridSpec
 from rdkit import Chem
 from tqdm import tqdm
 
@@ -19,7 +22,7 @@ from msIO.feature_managers.util_library import peaklist_to_spectrum
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
-from sqlalchemy import select, inspect
+from sqlalchemy import select, inspect, text
 from sqlalchemy.orm import selectinload, joinedload
 
 # need to import so that sqlalchemy knows about relationships
@@ -90,6 +93,18 @@ class FeatureManagerDB:
                 .options(*opts)
             ).unique().scalar_one()
         return obj
+
+    def get_value_from_table_for_feature_id(
+            self,
+            feature_id: int,
+            column_name: str,
+            table_name: str
+    ):
+        with self.session_maker() as session:
+            return session.execute(
+                text(f"SELECT {column_name} FROM {table_name} WHERE feature_id = :feature_id"),
+                {"feature_id": feature_id},
+            ).scalar_one()
 
     def _get_all_attributes_from(self, obj) -> list:
         with self.session_maker() as session:
@@ -464,6 +479,27 @@ class Library(FeatureManagerDB):
     def adduct(self) -> dict[int, str]:
         return self.get_all_attributes_from(FeatureMetaboScape, 'adduct_metaboscape')
 
+    def formula_sirius(self):
+        raise NotImplementedError()
+
+    def name_sirius(self):
+        raise NotImplementedError()
+
+    def get_values_for_feature(self, feature_id) -> dict[str, Any]:
+        out = {}
+        table_to_vals = {
+            'metaboscape_features': ['rt_seconds', 'CCS', 'mz_meas', 'adduct_metaboscape', 'formula_metaboscape', 'annotation_source', 'annotation_type'],
+            'compound_candidate': ['name_sirius', 'xlogp', 'inchi', 'smiles']
+        }
+
+        with self.session_maker() as session:
+            for table_name, col_names in table_to_vals.items():
+                out |= dict(zip(col_names, session.execute(
+                    text(f"SELECT {', '.join(col_names)} FROM {table_name} WHERE feature_id = :feature_id"),
+                    {"feature_id": feature_id},
+                ).one()))
+            return out
+
     def find_by_name(self, name: str, case_sensitive: bool = False, substring: bool = False) -> list[int]:
         """Return a list of feature ids with names matching the criteria."""
         t_name = lambda n: n if case_sensitive else n.lower()
@@ -584,62 +620,172 @@ class Library(FeatureManagerDB):
             return out
         return matches
 
-    def plot_compound_overview(self, f_id, axs: tuple[plt.Axes, plt.Axes] = None, **kwargs):
+    def plot_compound_overview(self, f_id, axs: tuple[plt.Axes, plt.Axes] = None, kwargs_mplot=None, **kwargs):
         if axs is None:
             _, axs = plt.subplots(nrows=2)
 
-        if self.smiles.get(f_id) is not None:
-            mol = Chem.MolFromSmiles(self.smiles[f_id])
-        elif self.inchis.get(f_id) is not None:
-            mol = Chem.MolFromInchi(self.inchis[f_id])
+        props = self.get_values_for_feature(f_id)
+
+        if (s:= props['smiles']) is not None:
+            mol = Chem.MolFromSmiles(s)
+        elif (i := props['inchi']) is not None:
+            mol = Chem.MolFromInchi(i)
         else:
             mol = Chem.Mol()
-        mplt_mol(mol=mol, ax=axs[0], **kwargs)
-        axs[0].set_title(f'feature id: {f_id}, name: {self.names.get(f_id, "")}, mz: {self.mzs[f_id]:.4f} Da')
+        if kwargs_mplot is None:
+            kwargs_mplot = {}
+        mplt_mol(mol=mol, ax=axs[0], **kwargs_mplot)
+        axs[0].set_title(f'feature id: {f_id}, name: {props['name_sirius']}, mz: {props['mz_meas']:.4f} Da')
         ms2: PeakList = self.get_ms_spectrum(f_id, level=2)
-        ms2.plot(ax=axs[1])
+        ms2.plot(ax=axs[1], normalize_intensities=True, **kwargs)
         return axs
 
-    def plot_match(self, f_id_lib: int, meas: FeatureManagerDB, f_id_mas, match_result: dict | pd.Series=None, fig=None, **kwargs):
+    def plot_match(
+            self,
+            f_id_lib: int,
+            meas: FeatureManagerDB,
+            f_id_meas: int,
+            mz_tol: float = None,
+            match_result: dict = None,
+            annotation_relative_cutoff: float = .3,
+            fig=None,
+            **kwargs
+    ):
+        if match_result is None:
+            match_result = {}
+
         if fig is None:
-            fig, axs = plt.subplots(nrows=4, layout='constrained')
-        else:
-            axs = fig.get_axes()
+            fig = plt.figure(figsize=(15, 15))
+
+        gs = GridSpec(
+            3, 2,
+            figure=fig,
+            width_ratios=[1, 2 / 3],  # right column is 2/3 as wide
+            height_ratios=[1, 1, 1],
+            hspace=0.3,
+            wspace=0.25
+        )
+
+        # Top row
+        ax1 = fig.add_subplot(gs[0, 0])
+        ax2 = fig.add_subplot(gs[0, 1])
+
+        # Middle row spans both columns
+        ax3 = fig.add_subplot(gs[1, :])
+
+        # Bottom row
+        ax4 = fig.add_subplot(gs[2, 0])
+        ax5 = fig.add_subplot(gs[2, 1])
+        axs = (ax1, ax2, ax3, ax4, ax5)
 
         # first plot: compound structure
         # and second plot: ms2 spectrum
-        self.plot_compound_overview(f_id_lib, axs=axs[:2], **kwargs)
+        self.plot_compound_overview(f_id_lib, axs=(ax1, ax3), annotation_relative_cutoff=annotation_relative_cutoff)
+        ax1.set_title('')
         # add measured as mirror
 
-        ms2_measured: PeakList = meas.get_ms_spectrum(f_id_mas, level=2)
+        # color according to match type
+        ax3.set_title(f'MS2 score: {round(float(match_result.get('ms2_score', -1)), 3)} ({match_result.get('n_hits_ms2')} peaks matched)')
+        ms2_measured: PeakList = meas.get_ms_spectrum(f_id_meas, level=2)
         if ms2_measured is not None:
             # scale to library
+            ms2_measured.plot(
+                ax=ax3,
+                as_mirror=True,
+                normalize_intensities=True,
+                annotation_relative_cutoff=annotation_relative_cutoff, linefmt='C1'
+            )
 
-            ms2_measured.plot(ax=axs[1], as_mirror=True, normalize_intensities=True)
-        # TODO: display cosine score, number of matched peaks, color according to match type, compound information next to structure
-        ...
+        props: dict[str, Any] = self.get_values_for_feature(f_id_lib)
+        formula = props['formula_metaboscape']
+        adduct = props['adduct_metaboscape']
+        M = CompoundDict(formula).mass
+        mz_theo = Adduct(adduct).mass_to_mz(M)
+
+        prop_cols = ['Name', 'Formula', 'Adduct', 'M / Da', 'RT / min', 'CCS / A2', 'logP', 'Database']
+        ann_props = pd.DataFrame(
+            columns=[''],
+            index=prop_cols,
+            data=[''] * len(prop_cols)
+        )
+        # compound information
+        ann_props.at['Name', ''] = props['name_sirius']
+        ann_props.at['Formula', ''] = formula
+        ann_props.at['Adduct', ''] = adduct
+        ann_props.at['M / Da', ''] = str(round(M, 4))
+        CCS = props['CCS']
+        ann_props.at['CCS / A2', ''] = str(round(CCS, 2)) if CCS is not None else ''
+        ann_props.at['logP', ''] = str(round(props['xlogp'], 3))
+        ann_props.at['Database', ''] = props['annotation_type']
+
+        import textwrap
+
+        for col in ann_props.columns:
+            ann_props[col] = ann_props[col].astype(str).map(
+                lambda x: "\n".join(textwrap.wrap(x, width=25))
+            )
+
+        ax2.axis("off")
+        pd.plotting.table(ax=ax2, data=ann_props, loc="center", cellLoc="left", edges='open')
+
         # third plot: theoretical and measured MS1:
-        ms1_measured: PeakList = meas.get_ms_spectrum(f_id_mas, level=1)
-
-        formula: str = self.formula_metaboscape.get(f_id_lib)
-        adduct: str = self.adduct.get(f_id_lib)
+        ax4.set_title('MS1 mirror plot')
+        ms1_measured: PeakList = meas.get_ms_spectrum(f_id_meas, level=1)
 
         if ms1_measured is not None:
-            ms1_measured.plot(ax=axs[2], as_mirror=True, normalize_intensities=True)
+            mzs = np.array(ms1_measured.mzs)
+            ints = np.array(ms1_measured.intensities)
+            mask = (mzs > mz_theo - .1) & (mzs < mz_theo + (CompoundDict('C[13]') - CompoundDict('C')).mass * 4 + .1)
+            ms1_measured = PeakList(mzs=mzs[mask], intensities=ints[mask])
+
+            ms1_measured.plot(
+                ax=ax4,
+                as_mirror=True,
+                normalize_intensities=True,
+                annotation_relative_cutoff=annotation_relative_cutoff,
+                linefmt='C1'
+            )
+
         ms1_theo: IsotopePattern = IsotopePattern.from_formula(
             formula=formula,
             adduct=adduct,
-            mass_accuracy=kwargs.pop('mass_accuracy', None),
+            mass_accuracy=kwargs.pop('mass_accuracy', mz_tol),
             mass_resolution=kwargs.pop('mass_resolution', None),
-            merge_method=kwargs.pop('merge_method', 'none')
+            merge_method=kwargs.pop('merge_method', 'weighted_average')
         )
-        _i_max = max(ms1_theo.intensities)
-        ms1_theo.intensities = [i / _i_max * 1000 for i in ms1_theo.intensities]
-        ms1_theo.plot(ax=axs[2])
+        ms1_theo: PeakList = PeakList(mzs=ms1_theo.masses, intensities=ms1_theo.intensities)
+        ms1_theo.plot(ax=ax4, normalize_intensities=True, annotation_relative_cutoff=annotation_relative_cutoff, **kwargs)
 
-        # TODO: fourth plot: table with properties
-        data = pd.DataFrame(index=['library', 'measured', 'difference'], columns=['feature id', 'm/z', 'RT', 'CCS'])
-        ...
+        ax4.legend(['measured', 'library'], loc='lower right')
+
+        # fourth plot: table with properties
+        cpr = pd.DataFrame(columns=['library', 'measured', 'difference'], index=['feature id', 'm/z', 'RT / min', 'CCS / A2'])
+        cpr.loc[:, :] = ''
+        mz_meas = meas.mzs[f_id_meas]
+
+        cpr.at['feature id', 'library'] = f_id_lib
+        cpr.at['feature id', 'measured'] = f_id_meas
+        cpr.at['m/z', 'library'] = str(round(mz_theo, 4))
+        cpr.at['m/z', 'measured'] = str(round(mz_meas, 4))
+        dmz = mz_theo - meas.mzs[f_id_meas]
+        cpr.at['m/z', 'difference'] = f'{round(dmz * 1e3, 1)} / mDa\n{round(dmz / mz_theo * 1e6, 1)} / ppm'
+        if props['rt_seconds'] is not None:
+            RT_min = round(props['rt_seconds'] / 60, 2)
+        else:
+            RT_min = ''
+        cpr.at['RT / min', 'library'] = RT_min
+        RT_meas_sec = meas.get_value_from_table_for_feature_id(f_id_meas, 'rt_seconds', 'metaboscape_features')
+        cpr.at['RT / min', 'measured'] = round(RT_meas_sec / 60, 2)
+        cpr.at['CCS / A2', 'library'] = CCS if CCS is not None else ''
+        CCS_meas = meas.get_value_from_table_for_feature_id(f_id_meas, 'CCS', 'metaboscape_features')
+        cpr.at['CCS / A2', 'measured'] = round(CCS_meas, 2)
+        if CCS is not None:
+            dCCS = (CCS - CCS_meas) / CCS
+            cpr.at['CCS / A2', 'difference'] = f'{dCCS:.1%}'
+        ax5.axis("off")
+        pl_table2 = pd.plotting.table(ax=ax5, data=cpr, loc="center", cellLoc="left", edges='open')
+        pl_table2.auto_set_font_size(False)
+        pl_table2.set_fontsize(10)
 
         fig.suptitle('')
         return axs

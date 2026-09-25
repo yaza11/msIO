@@ -77,8 +77,17 @@ results = (
 f_id_meas = 6780
 f_id_lib = 27192
 
+vals = lib.get_values_for_feature(f_id_lib)
+
 # display matched results
-lib.plot_match(f_id_lib, meas, f_id_meas)
+lib.plot_match(
+    f_id_lib,
+    meas,
+    f_id_meas,
+    mz_tol=max_dmz_da,
+    annotation_relative_cutoff=0.3,
+    match_result=[m for m in matched_f_ids_lib[f_id_meas] if m['feature_id'] == f_id_lib][0]
+)
 
 # add annotation to measured database:
 add_annotation_to_measured_db(f_id_meas, f_id_lib, results, lib, meas)
