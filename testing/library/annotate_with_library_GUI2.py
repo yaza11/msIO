@@ -1,10 +1,22 @@
+import functools
 import sqlite3
 import pandas as pd
 import numpy as np
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
 from msIO.feature_managers.db import Library, FeatureManagerDB
+
+
+def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
+    """Add a matched library entry to the measured database."""
+    ms2_score: float = results.loc[
+        (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib), 'ms2_score'
+    ].squeeze()
+    meas.add_annotations_from_library(lib, f_id_meas, f_id_lib, ms2_score)
+
 
 
 class AnnotationGUI:
@@ -16,12 +28,13 @@ class AnnotationGUI:
         self.lib_path = tk.StringVar()
         self.f_id = tk.IntVar(value=1)
         self.max_dmz_ppm = tk.StringVar(value="10.0")
-        self.max_dmz_da = tk.StringVar(value="")
+        self.max_dmz_mda = tk.StringVar(value="")
         self.require_ms2 = tk.BooleanVar(value=False)
 
         self.meas = None
         self.lib = None
         self.current_matches = None
+        self.canvas = None
 
         self.create_gui()
 
@@ -44,14 +57,14 @@ class AnnotationGUI:
         parameter_frame = ttk.LabelFrame(self.root, text="Matching Parameters", padding=10)
         parameter_frame.pack(fill="x", padx=10, pady=5)
 
-        ttk.Label(parameter_frame, text="Feature ID (f_id):").grid(row=0, column=0, sticky="w")
-        ttk.Entry(parameter_frame, textvariable=self.f_id, width=10).grid(row=0, column=1, padx=5, sticky="w")
+        # ttk.Label(parameter_frame, text="Feature ID (f_id):").grid(row=0, column=0, sticky="w")
+        # ttk.Entry(parameter_frame, textvariable=self.f_id, width=10).grid(row=0, column=1, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="max_dmz_ppm:").grid(row=0, column=2, sticky="w", padx=(10,0))
+        ttk.Label(parameter_frame, text="m/z tol. in ppm:").grid(row=0, column=2, sticky="w", padx=(10,0))
         ttk.Entry(parameter_frame, textvariable=self.max_dmz_ppm, width=10).grid(row=0, column=3, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="max_dmz_da:").grid(row=0, column=4, sticky="w", padx=(10,0))
-        ttk.Entry(parameter_frame, textvariable=self.max_dmz_da, width=10).grid(row=0, column=5, padx=5, sticky="w")
+        ttk.Label(parameter_frame, text="m/z tol. in mDa:").grid(row=0, column=4, sticky="w", padx=(10,0))
+        ttk.Entry(parameter_frame, textvariable=self.max_dmz_mda, width=10).grid(row=0, column=5, padx=5, sticky="w")
 
         ttk.Checkbutton(parameter_frame, text="require_ms2", variable=self.require_ms2).grid(row=1, column=0, columnspan=2, pady=5, sticky="w")
         ttk.Button(parameter_frame, text="Search", command= self.run_find_matches).grid(row=1, column=5, sticky="e")
@@ -64,24 +77,30 @@ class AnnotationGUI:
         treeview_frame = ttk.Frame(self.root, padding=10)
         treeview_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "mz","rt","annotation","delta_mz","error_ppm")
+        columns = ("feature_id_meas", "feature_id_lib", "name","formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library', 'n_hits_ms2')
         self.tree = ttk.Treeview(treeview_frame, columns=columns, show="headings", selectmode="browse")
 
         #Setting table column headers
-        self.tree.heading("id", text="ID")
-        self.tree.heading("mz", text="m/z")
-        self.tree.heading("rt", text="RT")
-        self.tree.heading("annotation", text="Annotation")
-        self.tree.heading("delta_mz", text="Delta m/Z")
-        self.tree.heading("error_ppm", text="Error PPM")
+        self.tree.heading("feature_id_meas", text="Measurement feature ID")
+        self.tree.heading("feature_id_lib", text="Lib feature ID")
+        self.tree.heading("name", text="Compound name")
+        self.tree.heading("formula", text="Formula")
+        self.tree.heading("ms2_score", text="MS2 score")
+        self.tree.heading("dmz_da", text="Delta m/z (Da)")
+        self.tree.heading("dmz_ppm", text="Delta m/z (ppm)")
+        self.tree.heading("source_library", text="Source")
+        self.tree.heading("n_hits_ms2", text="#MS2 peak matches")
 
         #Setting column widths
-        self.tree.column("id", width=60, anchor="center")
-        self.tree.column("mz", width=110, anchor="e")
-        self.tree.column("rt", width=80, anchor="center")
-        self.tree.column("annotation", width=250, anchor="w")
-        self.tree.column("delta_mz", width=100, anchor="e")
-        self.tree.column("error_ppm", width=100, anchor="e")
+        self.tree.column("feature_id_meas", width=60, anchor="center")
+        self.tree.column("feature_id_lib", width=60, anchor="center")
+        self.tree.column("name", width=250, anchor="w")
+        self.tree.column("formula", width=250, anchor="w")
+        self.tree.column("ms2_score", width=110, anchor="e")
+        self.tree.column("dmz_da", width=100, anchor="e")
+        self.tree.column("dmz_ppm", width=100, anchor="e")
+        self.tree.column("source_library", width=250, anchor="w")
+        self.tree.column("n_hits_ms2", width=60, anchor="center")
 
         scroll_bar = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scroll_bar.set)
@@ -92,8 +111,12 @@ class AnnotationGUI:
         button_frame = ttk.Frame(self.root, padding=10)
         button_frame.pack(fill="x", padx=10, pady=5)
 
+        # Plot Area
+        self.plot_frame = tk.LabelFrame(self.root, text="Match Overview")
+        self.plot_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
         ttk.Button(button_frame, text="Plot Match", command=self.plot_match).pack(side="left", padx=5)
-        ttk.Button(button_frame, text = "Annotate feature", command=self.annotate_feature).pack(side="right", padx=5)
+        ttk.Button(button_frame, text = "Annotate feature", command=self.add_annotation_to_meas).pack(side="right", padx=5)
 
     #Loading Measured Database
     def load_meas_db(self):
@@ -117,82 +140,58 @@ class AnnotationGUI:
             except Exception as e:
                 messagebox.showerror("Error", f"Failed to Load Library Database: \n{e}")
 
+    @functools.cached_property
+    def ms2_spectra(self):
+        return self.meas.get_ms_spectra(self.meas.feature_ids, level=2)
+
     def run_find_matches(self):
         if not self.meas_path.get() or not self.lib_path.get():
             messagebox.showerror("Error", "Please select both databases")
             return
 
-        f_id = self.f_id.get()
-        require_ms2 = self.require_ms2.get()
+        # f_id = self.f_id.get()
+        require_ms2: bool = self.require_ms2.get()
 
-        max_dmz_ppm = float(self.max_dmz_ppm.get()) if self.max_dmz_ppm.get().strip() else None
-        max_dmz_da = float(self.max_dmz_da.get()) if self.max_dmz_da.get().strip() else None
+        max_dmz_ppm: float = float(self.max_dmz_ppm.get()) if self.max_dmz_ppm.get().strip() else None
+        max_dmz_da: float = float(self.max_dmz_mda.get()) * 1e-3 if self.max_dmz_mda.get().strip() else None
 
         if (max_dmz_da is None and max_dmz_ppm is None) or (max_dmz_ppm is not None and max_dmz_da is not None):
-            messagebox.showerror("Error", "Please provide either max_dmz_ppm or max_dmz_da (but not both).")
+            messagebox.showerror("Error", "Please provide either max_dmz_ppm or max_dmz_mda (but not both).")
             return
 
         for row in self.tree.get_children():
             self.tree.delete(row)
 
-        matches = None
-
         try:
-            matches = self.lib.find_matches(f_id, self.meas, max_dmz_ppm, max_dmz_da, require_ms2 = require_ms2)
-
-        except TypeError as e:
-            if "has no len()" in str(e):
-                connection_meas = sqlite3.connect(self.meas_path.get())
-                row = connection_meas.execute("SELECT mz FROM peak WHERE id = ?;", (f_id,)).fetchone()
-                connection_meas.close()
-
-                if row and row[0] is not None:
-                    m_mz = float(row[0])
-                    #Calculating lower and upper m/z bounds
-                    delta = m_mz * (max_dmz_ppm/1e6) if max_dmz_ppm else max_dmz_da
-                    connection_lib = sqlite3.connect(self.lib_path.get())
-                    matches = pd.read_sql_query("SELECT id, mz, rt, annotation FROM peak WHERE mz BETWEEN ? AND ?;", connection_lib, params=(m_mz - delta, m_mz + delta))
-                    connection_lib.close()
-                else:
-                    return
-            else:
-                messagebox.showerror("Error", str(e))
-                return
-
+            self.current_matches: dict[int, list[dict]] = self.lib.find_matches(
+                mzs=self.meas.mzs,
+                max_dmz_ppm=max_dmz_ppm,
+                max_dmz_da=max_dmz_da,
+                ms2_spectra=self.ms2_spectra if require_ms2 else {},
+                require_ms2=require_ms2)
         except Exception as e:
+            self.current_matches = None
             messagebox.showerror("Error", f"Search failed:\n{e}")
+            self.database_status.config(text=f"No matches found.")
+            return
 
-        self.current_matches = matches
-        connection_meas = sqlite3.connect(self.meas_path.get())
-        peak_info = connection_meas.execute("SELECT mz, rt FROM peak WHERE id = ?;", (f_id,)).fetchone()
-        connection_meas.close()
+        # turn results into dataframe
+        series = []
+        for f_id_meas, matches in self.current_matches.items():
+            for match in matches:
+                series.append(pd.Series(name=f_id_meas, data=match))
 
-        if peak_info and peak_info[0] is not None:
-            m_mz = float(peak_info[0])
-            m_rt = f"{peak_info[1]:.2f}" if peak_info[1] is not None else None
-            self.database_status.config(text=f"Feature {f_id} | m/z: {m_mz:.5f} | RT: ({m_rt})")
+        self.current_matches_table: pd.DataFrame = (
+            pd.concat(series, axis=1).T
+            .reset_index(drop=False, names='feature_id_meas')
+            .rename(columns={'feature_id': 'feature_id_lib'})
+            .astype({'feature_id_meas': int, 'feature_id_lib': int, 'ms2_score': float, 'name': str, 'formula': str})
+            .sort_values(by=['feature_id_meas', 'ms2_score'])
+        )
 
-        else:
-            m_mz = None
-
-        if matches is not None and not matches.empty:
-            for _, r in matches.iterrows():
-                library_id = int(r['id']) if 'id' in r else None
-                library_mz = float(r['mz']) if 'mz' in r else 0.0
-                library_rt = f"{r['rt']:.2f}" if ('rt' in r and pd.notnull(r['rt'])) else None
-                annotation = str(r['annotation']) if ('annotation' in r and pd.notnull(r['annotation'])) else None
-
-                if m_mz:
-                    dmz = library_mz - m_mz
-                    ppm = (dmz / m_mz) * 1e6
-                    delta_str, ppm_str = f"{dmz:+.5f}", f"{ppm:+.2f}"
-                else:
-                    delta_str, ppm_str = None, None
-
-                self.tree.insert('', 'end', values=(library_id, f"{library_mz:.5f}", library_rt, annotation, delta_str, ppm_str))
-
-        else:
-            self.database_status.config(text=f"Feature {f_id}: No matches found.")
+        for _, row in self.current_matches_table.iterrows():
+            # columns = ("feature_id_meas", "feature_id_lib", "name","formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library', 'n_hits_ms2')
+            self.tree.insert('', 'end', values=row.tolist())
 
     def plot_match(self):
         selection = self.tree.selection()
@@ -201,94 +200,56 @@ class AnnotationGUI:
             return
 
         values = self.tree.item(selection, 'values')
-        library_id, library_mz_str, _, annotation = values[0], values[1], values[2], values[3]
-        f_id = self.f_id.get()
+        # ("feature_id_meas", "feature_id_lib", "name", "formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library',
+        #  'n_hits_ms2')
 
-        connection_meas = sqlite3.connect(self.meas_path.get())
-        meas_peak = pd.read_sql_query("SELECT mz, intensity, annotation FROM peak WHERE id = ?;", connection_meas, params=(f_id,))
-        connection_meas.close()
+        f_id_meas, f_id_lib = int(values[0]), int(values[1])
 
-        connection_lib = sqlite3.connect(self.lib_path.get())
-        lib_peak = pd.read_sql_query("SELECT mz, intensity, annotation FROM peak WHERE id = ?;", connection_lib, params=(library_id,))
-        connection_lib.close()
+        match_result = [m for m in self.current_matches[f_id_meas] if m['feature_id'] == f_id_lib][0]
 
-        if meas_peak.empty:
-            messagebox.showerror("Error", f"No peaks found for {f_id}")
-            return
+        max_dmz_ppm: float = float(self.max_dmz_ppm.get()) if self.max_dmz_ppm.get().strip() else None
+        max_dmz_da: float = float(self.max_dmz_mda.get()) * 1e-3 if self.max_dmz_mda.get().strip() else None
+        if max_dmz_da is not None:
+            mz_tol_da = max_dmz_da
+        else:  # use m/z to convert ppm to da
+            mz_tol_da = max_dmz_ppm / 1e6 * self.meas.mzs[f_id_meas] * 1e3
 
-        m_mz = meas_peak['mz'].values
-        m_intensity = (meas_peak['intensity'].values/meas_peak['intensity'].max())*1000 if ('intensity' in meas_peak and meas_peak['intensity'].max()>0) else np.full_like(m_mz, 1000)
+        # Remove the previous canvas
+        if self.canvas is not None:
+            self.canvas.get_tk_widget().destroy()
+            self.canvas = None
 
-        if not lib_peak.empty:
-            library_mz = lib_peak['mz'].values
-            library_intensity = -(lib_peak['intensity'].values/lib_peak['intensity'].max())*1000 if ('intensity' in lib_peak and lib_peak['intensity'].max()>0) else np.full_like(library_mz, -1000)
-        else:
-            library_mz = [float(library_mz_str)]
-            library_intensity = [-1000]
+        fig = plt.figure(figsize=(15, 15))
+        self.lib.plot_match(
+            f_id_lib=f_id_lib,
+            f_id_meas=f_id_meas,
+            meas=self.meas,
+            mz_tol_da=mz_tol_da,
+            annotation_relative_cutoff=0.3,  # TODO: turn this into slider
+            match_result=match_result,
+            fig=fig
+        )
+        self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+        plt.close(fig)
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 8), sharex = False)
+        self.canvas.draw()
+        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-        #Top Plot
-        ax1.vlines(m_mz, 0, m_intensity, color='red', linestyle='dashed', lw=1.2)
-        ax1.vlines(library_mz, 0, library_intensity, color='blue', linestyle='dashed', lw=1.2)
-        ax1.axhline(0, color='black', linestyle='dashed', lw=1)
-
-        for mz, intens, label in zip(m_mz, m_intensity, meas_peak.get('annotation', ['']*len(m_mz))):
-            text_str = f"{mz:.4f} {label}".strip()
-            ax1.text(mz, intens + 50, text_str, rotation = 90, va='bottom', ha = 'center', fontsize = 10, fontweight = 'bold')
-
-        for mz, intens in zip(library_mz, library_intensity):
-            text_str = f"{mz:.4f} {annotation}".strip()
-            ax1.text(mz, intens - 50, text_str, rotation = 90, va='top', ha = 'center', fontsize = 10)
-
-        ax1.set_ylabel("Intensity")
-        ax1.set_xlabel("m/z")
-        ax1.set_ylim(-1150,1150)
-
-        #Bottom Plot
-        target_mz = m_mz[0]
-        ax2.vlines(m_mz, 0, m_intensity, color='red', linestyle='dashed', lw=1.2)
-        ax2.vlines(library_mz, 0, library_intensity, color='blue', linestyle='dashed', lw=1)
-        ax2.axhline(0, color='red', linestyle='dashed', lw=1)
-
-        #Setting x-lim to 4 Da above and below to avoid any possible text overlapping.
-        ax2.set_xlim(target_mz - 4, target_mz+4)
-        ax2.set_ylim(-1150,1150)
-        ax2.set_ylabel("Fraction")
-        ax2.set_xlabel("mass in Da")
-
-        for mz, intens in zip(m_mz, m_intensity):
-            if target_mz - 4 <= mz <= target_mz + 4:
-                ax2.text(mz, intens + 50, f"{mz:.4f}", rotation = 90, va='bottom', ha = 'center', fontsize = 10, fontweight = 'bold')
-
-        for mz, intens in zip(library_mz, library_intensity):
-            if target_mz - 4 <= mz <= target_mz + 4:
-                ax2.text(mz, intens - 50, f"{mz:.4f}", rotation = 90, va='bottom', ha = 'center', fontsize = 10, fontweight = 'bold')
-
-        plt.tight_layout()
-        plt.show()
-
-    def annotate_feature(self):
+    def add_annotation_to_meas(self):
         selection = self.tree.selection()
         if not selection:
             messagebox.showerror("Error", "Please select a match row first")
             return
 
         values = self.tree.item(selection, 'values')
-        annotation = values[3]
-        f_id = self.f_id.get()
+        f_id_mas, f_id_lib = int(values[0]), int(values[1])
 
-        confirm = messagebox.askyesno("Confirm", f"Assign {annotation} to Feature {f_id}")
+        confirm = messagebox.askyesno("Confirm", f"Assign {f_id_lib} to Feature {f_id_mas}?")
 
         if not confirm:
             return
-
         try:
-            connection = sqlite3.connect(self.meas_path.get())
-            connection.execute("UPDATE peak SET annotation = ? WHERE id = ?;", (annotation, f_id))
-            connection.commit()
-            connection.close()
-            messagebox.showinfo("Success", f"Annotation Feature {f_id}.")
+            add_annotation_to_measured_db(f_id_mas, f_id_lib, self.current_matches_table, self.lib, self.meas)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 

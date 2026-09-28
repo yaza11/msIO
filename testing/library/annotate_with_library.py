@@ -84,7 +84,7 @@ lib.plot_match(
     f_id_lib,
     meas,
     f_id_meas,
-    mz_tol=max_dmz_da,
+    mz_tol_da=max_dmz_da,
     annotation_relative_cutoff=0.3,
     match_result=[m for m in matched_f_ids_lib[f_id_meas] if m['feature_id'] == f_id_lib][0]
 )

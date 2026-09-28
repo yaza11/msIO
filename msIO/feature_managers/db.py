@@ -227,7 +227,7 @@ class FeatureManagerDB:
     ) -> list[list[int]]:
         """Returns the matched feature ids"""
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
-            'provide either max_dmz_da or max_dmz_ppm (but not both)'
+            'provide either max_dmz_mda or max_dmz_ppm (but not both)'
 
         mzs = np.asarray(mzs)
 
@@ -519,8 +519,9 @@ class Library(FeatureManagerDB):
             return_nhits_ms2: bool = False,
             require_ms2: bool = False,
     ):
+        """Find matches in the library for a list of provided m/z values. Optionally, also require MS2 matches."""
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
-            'provide either max_dmz_da or max_dmz_ppm (but not both)'
+            'provide either max_dmz_mda or max_dmz_ppm (but not both)'
         if (as_dicts := isinstance(mzs, dict)) and (ms2_spectra is not None) and (not isinstance(ms2_spectra, dict)):
             raise ValueError('If mzs are provided as dict, ms2 must also be a dict')
 
@@ -645,7 +646,7 @@ class Library(FeatureManagerDB):
             f_id_lib: int,
             meas: FeatureManagerDB,
             f_id_meas: int,
-            mz_tol: float = None,
+            mz_tol_da: float = None,
             match_result: dict = None,
             annotation_relative_cutoff: float = .3,
             fig=None,
@@ -749,7 +750,7 @@ class Library(FeatureManagerDB):
         ms1_theo: IsotopePattern = IsotopePattern.from_formula(
             formula=formula,
             adduct=adduct,
-            mass_accuracy=kwargs.pop('mass_accuracy', mz_tol),
+            mass_accuracy=kwargs.pop('mass_accuracy', mz_tol_da),
             mass_resolution=kwargs.pop('mass_resolution', None),
             merge_method=kwargs.pop('merge_method', 'weighted_average')
         )
@@ -835,7 +836,7 @@ if __name__ == '__main__':
     # #     ms2_spectra=ms2_meas,
     # #     max_ms2_dmz_da=10e-3,
     # #     min_ms2_score=.7,
-    # #     max_dmz_da=5e-3,
+    # #     max_dmz_mda=5e-3,
     # #     require_ms2=False
     # # )
     # matches: dict[int, list[dict]] = lib.find_matches(
@@ -843,7 +844,7 @@ if __name__ == '__main__':
     #     ms2_spectra=ms2_meas,
     #     max_ms2_dmz_da=10e-3,
     #     min_ms2_score=.7,
-    #     max_dmz_da=5e-3,
+    #     max_dmz_mda=5e-3,
     #     require_ms2=False,
     #     return_nhits_ms2=True
     # )
