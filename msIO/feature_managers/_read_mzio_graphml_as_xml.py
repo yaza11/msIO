@@ -55,10 +55,25 @@ def collapse_ms2_similarities_to_compounds(comp_to_f_ids: dict[int, list[int]], 
 
 
 if __name__ == '__main__':
-    file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine_networking_new_iimn.graphml"
+    file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine_networking_new_no_threshold_cosine_fbmn.graphml"
 
     node_data, edge_data = get_node_and_edge_data(file)
+
+    coel = edge_data.loc[edge_data.type_string == 'MS1 shape correlation', :]
 
     sims_long = get_modified_cosine_similarities(edge_data)
 
     df = sims_long
+
+    e = edge_data.loc[edge_data.type=='Ion Identity', ['source', 'target', 'score', 'label']]
+
+    feature_pairs = {
+        e: df
+        for e, df in list(edge_data.loc[:, ['source', 'target', 'type', 'score', 'label']].groupby(by=['source', 'target']))
+        if df.shape[0] == 4}
+
+    # adduct pair candidates: Ion Identity & MS1 shape
+
+    (~node_data.adduct.isnull()).sum()
+
+    (node_data.type == 'Feature').sum()

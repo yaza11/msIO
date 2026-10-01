@@ -24,9 +24,10 @@ def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.Dat
 
 
 # get databases for measured data
-path_file_meas = r"C:\Users\Yannick Zander\Nextcloud2\Avin\database_gdgts.sqlite"
+# path_file_meas = r"C:\Users\yanni\Nextcloud2\Avin\database_gdgts.sqlite"
+path_file_meas = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features.db"
 # get databases for library used to annotate the data
-path_file_lib = r"C:\Users\Yannick Zander\Nextcloud2\Avin\archlipids_high_conf.sqlite"
+path_file_lib = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library_complete.sql"
 
 # open databases
 meas = FeatureManagerDB(path_file_meas)
@@ -47,7 +48,7 @@ if all([mz is None for mz in meas.mzs.values()]):
 else:
     mzs = meas.mzs
 
-matched_f_ids_lib: dict[int, list[dict]] = lib.find_matches(
+"""matched_f_ids_lib: dict[int, list[dict]] = lib.find_matches(
     mzs=mzs,
     max_dmz_ppm=max_dmz_ppm,
     max_dmz_da=max_dmz_da,
@@ -69,15 +70,18 @@ results = (
     .rename(columns={'feature_id': 'feature_id_lib'})
     .astype({'feature_id_meas': int, 'feature_id_lib': int, 'ms2_score': float, 'name': str, 'formula': str})
     .sort_values(by=['feature_id_meas', 'ms2_score'])
-)
+)"""
 
 
 # select which feature from the measurement and data to plot
 # (in the GUI this should be selected from the table)
-f_id_meas = 6780
-f_id_lib = 27192
+f_id_meas = 4238
+f_ids_lib = lib.find_by_name('Rib-Archaeol(20:0_20:0)')
 
-vals = lib.get_values_for_feature(f_id_lib)
+# f_id_lib = f_ids_lib[0]
+
+f_id_lib = ...
+vals = lib.get_values_for_feature(10000)
 
 # display matched results
 lib.plot_match(
@@ -86,8 +90,10 @@ lib.plot_match(
     f_id_meas,
     mz_tol_da=max_dmz_da,
     annotation_relative_cutoff=0.3,
-    match_result=[m for m in matched_f_ids_lib[f_id_meas] if m['feature_id'] == f_id_lib][0]
+    # match_result=[m for m in matched_f_ids_lib[f_id_meas] if m['feature_id'] == f_id_lib][0]
 )
 
 # add annotation to measured database:
-add_annotation_to_measured_db(f_id_meas, f_id_lib, results, lib, meas)
+# add_annotation_to_measured_db(f_id_meas, f_id_lib, results, lib, meas)
+
+# meas.compare_features(4238, 4239)

@@ -174,6 +174,6 @@ if __name__ == '__main__':
     # f = test()
 
     pl = PeakList(mzs=[1, 2, 3], intensities=[3, 4, 5])
-    spec = MsSpec(mz=100, ms_level=1, charge=1, peaks=pl)
-
-    mgf_feat = FeatureMgf(polarity='pos', ms_specs=[spec])
+    # spec = MsSpec(mz=100, ms_level=1, charge=1, peaks=pl)
+    #
+    # mgf_feat = FeatureMgf(polarity='pos', ms_specs=[spec])

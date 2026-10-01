@@ -32,4 +32,4 @@ project_import_manager = ProjectImportManager(
 )
 
 initiate_db(db_file)
-project_import_manager.to_sql(db_file, feature_ids=metaboscape_manager.feature_ids)
+project_import_manager.to_sql(db_file, feature_ids=project_import_manager.feature_ids)
