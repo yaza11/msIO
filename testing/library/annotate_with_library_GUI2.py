@@ -86,7 +86,7 @@ class AnnotationGUI:
         self.tree.heading("name", text="Compound name")
         self.tree.heading("formula", text="Formula")
         self.tree.heading("ms2_score", text="MS2 score")
-        self.tree.heading("dmz_da", text="Delta m/z (Da)")
+        self.tree.heading("dmz_da", text="Delta m/z (mDa)")
         self.tree.heading("dmz_ppm", text="Delta m/z (ppm)")
         self.tree.heading("source_library", text="Source")
         self.tree.heading("n_hits_ms2", text="#MS2 peak matches")
@@ -257,4 +257,3 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = AnnotationGUI(root)
     root.mainloop()
-

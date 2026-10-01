@@ -146,7 +146,7 @@ class LibraryGUI:
         try:
             #Using selected result as feature ID
             feature_id = selected_result
-            print("Feature ID used for plotting:", feature_id)
+            # print("Feature ID used for plotting:", feature_id)
 
             # Remove the previous canvas
             if self.canvas is not None:
