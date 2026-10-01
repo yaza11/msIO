@@ -5,7 +5,8 @@ import numpy as np
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 import matplotlib.pyplot as plt
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.figure import Figure
 
 from msIO.feature_managers.db import Library, FeatureManagerDB
 
@@ -23,18 +24,20 @@ class AnnotationGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Annotation GUI")
-        self.root.geometry("950x700")
+        self.root.geometry("1500x750")
         self.meas_path = tk.StringVar()
         self.lib_path = tk.StringVar()
         self.f_id = tk.IntVar(value=1)
         self.max_dmz_ppm = tk.StringVar(value="10.0")
         self.max_dmz_mda = tk.StringVar(value="")
+        self.max_dmz_ms2_mda = tk.StringVar(value="10")
         self.require_ms2 = tk.BooleanVar(value=False)
 
         self.meas = None
         self.lib = None
         self.current_matches = None
         self.canvas = None
+        self.toolbar = None
 
         self.create_gui()
 
@@ -60,47 +63,56 @@ class AnnotationGUI:
         # ttk.Label(parameter_frame, text="Feature ID (f_id):").grid(row=0, column=0, sticky="w")
         # ttk.Entry(parameter_frame, textvariable=self.f_id, width=10).grid(row=0, column=1, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="m/z tol. in ppm:").grid(row=0, column=2, sticky="w", padx=(10,0))
-        ttk.Entry(parameter_frame, textvariable=self.max_dmz_ppm, width=10).grid(row=0, column=3, padx=5, sticky="w")
+        ttk.Label(parameter_frame, text="m/z tol. in ppm:").grid(row=0, column=0, sticky="w", padx=(10,0))
+        ttk.Entry(parameter_frame, textvariable=self.max_dmz_ppm, width=10).grid(row=0, column=1, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="m/z tol. in mDa:").grid(row=0, column=4, sticky="w", padx=(10,0))
-        ttk.Entry(parameter_frame, textvariable=self.max_dmz_mda, width=10).grid(row=0, column=5, padx=5, sticky="w")
+        ttk.Label(parameter_frame, text="m/z tol. in mDa:").grid(row=0, column=2, sticky="w", padx=(10,0))
+        ttk.Entry(parameter_frame, textvariable=self.max_dmz_mda, width=10).grid(row=0, column=3, padx=5, sticky="w")
 
-        ttk.Checkbutton(parameter_frame, text="require_ms2", variable=self.require_ms2).grid(row=1, column=0, columnspan=2, pady=5, sticky="w")
-        ttk.Button(parameter_frame, text="Search", command= self.run_find_matches).grid(row=1, column=5, sticky="e")
+        ttk.Label(parameter_frame, text="m/z tol. for MS2 matches in mDa:").grid(row=0, column=4, sticky="w", padx=(10, 0))
+        ttk.Entry(parameter_frame, textvariable=self.max_dmz_ms2_mda, width=10).grid(row=0, column=5, padx=5, sticky="w")
+
+        ttk.Label(parameter_frame, text="metric for scoring MS2 matches").grid(row=0, column=6, sticky="w",
+                                                                                 padx=(10, 0))
+        self.metric = ttk.Combobox(parameter_frame, values=['cosine_fwd', 'cosine_bwd', 'cosine_sim', 'modified_cosine_greedy'], width=10)
+        self.metric.set('modified_cosine_greedy')
+        self.metric.grid(row=0, column=7, padx=5,sticky="w")
+
+        ttk.Checkbutton(parameter_frame, text="require_ms2", variable=self.require_ms2).grid(row=0, column=8, padx=(10, 0), sticky="w")
+        ttk.Button(parameter_frame, text="Search", command= self.run_find_matches).grid(row=0, column=9, padx=(10, 0), sticky="e")
 
         #Database status
         self.database_status = ttk.Label(self.root, text="Please Load Database to begin.")
         self.database_status.pack(anchor="w", padx=15, pady=2)
 
-        #Treeview table form. Got to know about it from Coders Legacy website
+        #Treeview table form
         treeview_frame = ttk.Frame(self.root, padding=10)
         treeview_frame.pack(fill="both", expand=True)
 
-        columns = ("feature_id_meas", "feature_id_lib", "name","formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library', 'n_hits_ms2')
-        self.tree = ttk.Treeview(treeview_frame, columns=columns, show="headings", selectmode="browse")
+        # this defines the order
+        self.tree_columns = ("feature_id_meas",  "name", "formula", "ms2_score", 'n_hits_ms2',
+                             "dmz_mda", "dmz_ppm", 'source_library')
+        self.tree = ttk.Treeview(treeview_frame, columns=self.tree_columns, show="headings", selectmode="browse")
 
         #Setting table column headers
         self.tree.heading("feature_id_meas", text="Measurement feature ID")
-        self.tree.heading("feature_id_lib", text="Lib feature ID")
         self.tree.heading("name", text="Compound name")
         self.tree.heading("formula", text="Formula")
         self.tree.heading("ms2_score", text="MS2 score")
-        self.tree.heading("dmz_da", text="Delta m/z (mDa)")
+        self.tree.heading("n_hits_ms2", text="#MS2 peak matches")
+        self.tree.heading("dmz_mda", text="Delta m/z (mDa)")
         self.tree.heading("dmz_ppm", text="Delta m/z (ppm)")
         self.tree.heading("source_library", text="Source")
-        self.tree.heading("n_hits_ms2", text="#MS2 peak matches")
 
         #Setting column widths
         self.tree.column("feature_id_meas", width=60, anchor="center")
-        self.tree.column("feature_id_lib", width=60, anchor="center")
         self.tree.column("name", width=250, anchor="w")
-        self.tree.column("formula", width=250, anchor="w")
-        self.tree.column("ms2_score", width=110, anchor="e")
-        self.tree.column("dmz_da", width=100, anchor="e")
-        self.tree.column("dmz_ppm", width=100, anchor="e")
-        self.tree.column("source_library", width=250, anchor="w")
+        self.tree.column("formula", width=100, anchor="w")
+        self.tree.column("ms2_score", width=60, anchor="e")
         self.tree.column("n_hits_ms2", width=60, anchor="center")
+        self.tree.column("dmz_mda", width=60, anchor="e")
+        self.tree.column("dmz_ppm", width=60, anchor="e")
+        self.tree.column("source_library", width=250, anchor="w")
 
         scroll_bar = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscroll=scroll_bar.set)
@@ -149,11 +161,12 @@ class AnnotationGUI:
             messagebox.showerror("Error", "Please select both databases")
             return
 
-        # f_id = self.f_id.get()
         require_ms2: bool = self.require_ms2.get()
 
         max_dmz_ppm: float = float(self.max_dmz_ppm.get()) if self.max_dmz_ppm.get().strip() else None
         max_dmz_da: float = float(self.max_dmz_mda.get()) * 1e-3 if self.max_dmz_mda.get().strip() else None
+        max_ms2_dmz_da: float = float(self.max_dmz_ms2_mda.get()) * 1e-3 if self.max_dmz_ms2_mda.get().strip() else None
+        metric = self.metric.get()
 
         if (max_dmz_da is None and max_dmz_ppm is None) or (max_dmz_ppm is not None and max_dmz_da is not None):
             messagebox.showerror("Error", "Please provide either max_dmz_ppm or max_dmz_mda (but not both).")
@@ -167,7 +180,10 @@ class AnnotationGUI:
                 mzs=self.meas.mzs,
                 max_dmz_ppm=max_dmz_ppm,
                 max_dmz_da=max_dmz_da,
-                ms2_spectra=self.ms2_spectra if require_ms2 else {},
+                max_ms2_dmz_da=max_ms2_dmz_da,
+                metric=metric,
+                return_nhits_ms2=True,
+                ms2_spectra=self.ms2_spectra,
                 require_ms2=require_ms2)
         except Exception as e:
             self.current_matches = None
@@ -185,13 +201,25 @@ class AnnotationGUI:
             pd.concat(series, axis=1).T
             .reset_index(drop=False, names='feature_id_meas')
             .rename(columns={'feature_id': 'feature_id_lib'})
-            .astype({'feature_id_meas': int, 'feature_id_lib': int, 'ms2_score': float, 'name': str, 'formula': str})
+            .astype({
+                'feature_id_meas': int,
+                'feature_id_lib': int,
+                'ms2_score': float,
+                'name': str,
+                'formula': str,
+                'dmz_mda': float,
+                'dmz_ppm': float,
+                'source_library': str,
+                'n_hits_ms2': int}
+            )
             .sort_values(by=['feature_id_meas', 'ms2_score'])
         )
+        self.current_matches_table.loc[:, 'ms2_score'] = self.current_matches_table['ms2_score'].round(3)
+        self.current_matches_table.loc[:, 'dmz_mda'] = self.current_matches_table['dmz_mda'].round(1).abs()
+        self.current_matches_table.loc[:, 'dmz_ppm'] = self.current_matches_table['dmz_ppm'].round(1).abs()
 
         for _, row in self.current_matches_table.iterrows():
-            # columns = ("feature_id_meas", "feature_id_lib", "name","formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library', 'n_hits_ms2')
-            self.tree.insert('', 'end', values=row.tolist())
+            self.tree.insert('', 'end', values=[row[col_name] for col_name in self.tree_columns])
 
     def plot_match(self):
         selection = self.tree.selection()
@@ -200,8 +228,6 @@ class AnnotationGUI:
             return
 
         values = self.tree.item(selection, 'values')
-        # ("feature_id_meas", "feature_id_lib", "name", "formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library',
-        #  'n_hits_ms2')
 
         f_id_meas, f_id_lib = int(values[0]), int(values[1])
 
@@ -218,8 +244,11 @@ class AnnotationGUI:
         if self.canvas is not None:
             self.canvas.get_tk_widget().destroy()
             self.canvas = None
+        if self.toolbar is not None:
+            self.toolbar.destroy()
+            self.toolbar = None
 
-        fig = plt.figure(figsize=(15, 15))
+        fig = Figure(figsize=(15, 15))
         self.lib.plot_match(
             f_id_lib=f_id_lib,
             f_id_meas=f_id_meas,
@@ -230,9 +259,11 @@ class AnnotationGUI:
             fig=fig
         )
         self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
-        plt.close(fig)
-
+        self.toolbar = NavigationToolbar2Tk(self.canvas, self.plot_frame)
+        self.toolbar.update()
+        self.toolbar.pack()
         self.canvas.draw()
+        # plt.close(fig)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def add_annotation_to_meas(self):

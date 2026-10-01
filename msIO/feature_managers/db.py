@@ -636,7 +636,7 @@ class Library(FeatureManagerDB):
         if kwargs_mplot is None:
             kwargs_mplot = {}
         mplt_mol(mol=mol, ax=axs[0], **kwargs_mplot)
-        axs[0].set_title(f'feature id: {f_id}, name: {props['name_sirius']}, mz: {props['mz_meas']:.4f} Da')
+        axs[0].set_title(f'feature id: {f_id}, name: {props['name_sirius']}, adduct: {props['adduct_metaboscape']}\nmz: {props['mz_meas']:.4f} Da, formula: {props['formula_metaboscape']}')
         ms2: PeakList = self.get_ms_spectrum(f_id, level=2)
         ms2.plot(ax=axs[1], normalize_intensities=True, **kwargs)
         return axs

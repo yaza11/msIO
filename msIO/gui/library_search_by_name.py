@@ -1,10 +1,13 @@
 import tkinter as tk
 from tkinter import filedialog, messagebox
+
+from matplotlib.figure import Figure
+
 from msIO.feature_managers.db import Library
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.pyplot as plt
 
-class LibraryGUI:
+class LibraryNameSearch:
     def __init__(self, root):
         self.root = root
         self.root.title("msIO Library Viewer")
@@ -13,22 +16,21 @@ class LibraryGUI:
         self.library = None
         self.search_results = []
         self.canvas = None
+        self.toolbar = None
 
-        #Creating GUI
+        self._create_gui()
 
-        self.create_gui()
-
-    def create_gui(self):
+    def _create_gui(self):
         database_frame = tk.Frame(self.root)
         database_frame.pack(fill = tk.X, padx=10, pady = 10)
         self.select_database_button = tk.Button(database_frame, text = "Select SQLite Database", command = self.select_database)
         self.select_database_button.pack(side = tk.LEFT, padx=5)
-        self.database_label = tk.Label(database_frame, text = "Database:None", anchor = "w")
+        self.database_label = tk.Label(database_frame, text = "Database: None", anchor = "w")
         self.database_label.pack(side = tk.LEFT, padx=10)
 
         #Feature info
-        self.feature_label = tk.Label(self.root, text="Number of features: -", anchor = "w")
-        self.feature_label.pack(side = tk.LEFT, padx=15)
+        self.feature_label = tk.Label(database_frame, text="Number of features: -", anchor = "w")
+        self.feature_label.pack(padx=15)
 
         #Compound search
         search_frame = tk.LabelFrame(self.root, text = "Compound Search")
@@ -40,9 +42,31 @@ class LibraryGUI:
         self.name_entry = tk.Entry(search_frame, width=40)
         self.name_entry.grid(row = 0, column = 1, padx=5, pady=10)
 
+        # Case Sensitive Checkbox
+        self.is_case_sensitive_var = tk.BooleanVar(value=False, name='Case sensitive?')
+        case_sensitive_checkbox = tk.Checkbutton(
+            search_frame,
+            text="Case Sensitive",
+            variable=self.is_case_sensitive_var,
+            onvalue=True,
+            offvalue=False
+        )
+        case_sensitive_checkbox.grid(row=0, column=2, padx=5, pady=10, sticky="w")
+
+        # Exact Match Checkbox
+        self.is_exact_name_match = tk.BooleanVar(value=True)
+        exact_match_checkbox = tk.Checkbutton(
+            search_frame,
+            text="Exact Match",
+            variable=self.is_exact_name_match,
+            onvalue=True,
+            offvalue=False
+        )
+        exact_match_checkbox.grid(row=0, column=3, padx=5, pady=10, sticky="w")
+
         #Search Button
         self.search_button = tk.Button(search_frame, text = "Search", command = self.search_compound)
-        self.search_button.grid(row = 0, column = 2, padx=5, pady=10)
+        self.search_button.grid(row = 0, column = 4, padx=5, pady=10)
 
         #Search Results
         result_label = tk.Label(search_frame, text = "Result:")
@@ -67,7 +91,7 @@ class LibraryGUI:
         try:
             self.library = Library(db_file)
             #Display database path
-            self.database_label.config(text = f"Database: {db_file}")
+            self.database_label.config(text = f"Connected to database: {db_file}")
 
             #Display features
             self.feature_label.config(text=f"Number of features:" f"{len(self.library.feature_ids)}")
@@ -77,7 +101,6 @@ class LibraryGUI:
 
             #Reset stored search result
             self.search_results = []
-            messagebox.showinfo("Success", "Successfully opened SQLite library")
             print("Library opened successfully")
             print("Number of features: ", len(self.library.feature_ids))
 
@@ -92,7 +115,9 @@ class LibraryGUI:
             return
 
         #Get compound name
-        compound_name = self.name_entry.get().strip()
+        compound_name: str = self.name_entry.get().strip()
+        is_case_sensitive: bool = self.is_case_sensitive_var.get()
+        is_exact_name_match: bool = self.is_exact_name_match.get()
         if not compound_name:
             messagebox.showerror("Error", "Please enter a compound name")
             return
@@ -100,8 +125,11 @@ class LibraryGUI:
             print()
             print("Searching for:", compound_name)
 
-            #Using find_by_name as suggested by Yannick
-            self.search_results: list[int] = self.library.find_by_name(compound_name)
+            self.search_results: list[int] = self.library.find_by_name(
+                name=compound_name,
+                case_sensitive=is_case_sensitive,
+                substring=not is_exact_name_match
+            )
             print("Search Result:")
             print(self.search_results)
 
@@ -115,7 +143,8 @@ class LibraryGUI:
 
             #Display results
             for result in self.search_results:
-                self.result_listbox.insert(tk.END, str(result))
+                r_in_list = f'{self.library.names[result]} {self.library.adduct[result]}'
+                self.result_listbox.insert(tk.END, r_in_list)
             print("Number of results:", len(self.search_results))
 
         except Exception as e:
@@ -152,16 +181,21 @@ class LibraryGUI:
             if self.canvas is not None:
                 self.canvas.get_tk_widget().destroy()
                 self.canvas = None
+            if self.toolbar is not None:
+                self.toolbar.destroy()
+                self.toolbar = None
 
             #Creating matplotlib figure
-            fig, axs = plt.subplots(1, 2, figsize = (10, 5))
-            plt.close(fig)
-
+            fig = Figure(figsize=(10, 5))
+            axs = fig.subplots(1, 2)
             #Asking msIO to create compound overview
             self.library.plot_compound_overview(feature_id, axs=axs)
 
             #Putting Matplotlib inside the Tkinter
             self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
+            self.toolbar = NavigationToolbar2Tk(self.canvas, self.root)
+            self.toolbar.update()
+            self.toolbar.pack()
             self.canvas.draw()
             self.canvas.get_tk_widget().pack(fill = tk.BOTH, expand=True)
             print("Compound overview displayed")
@@ -173,8 +207,9 @@ class LibraryGUI:
             print("Plot error:", e)
             print(e)
 
-#Start Program
 
-root = tk.Tk()
-app = LibraryGUI(root)
-root.mainloop()
+if __name__ == "__main__":
+    # Start Program
+    root = tk.Tk()
+    app = LibraryNameSearch(root)
+    root.mainloop()
