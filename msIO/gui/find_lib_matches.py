@@ -238,7 +238,7 @@ class AnnotationGUI:
         if max_dmz_da is not None:
             mz_tol_da = max_dmz_da
         else:  # use m/z to convert ppm to da
-            mz_tol_da = max_dmz_ppm / 1e6 * self.meas.mzs[f_id_meas] * 1e3
+            mz_tol_da = max_dmz_ppm / 1e6 * self.meas.mzs[f_id_meas]
 
         # Remove the previous canvas
         if self.canvas is not None:
