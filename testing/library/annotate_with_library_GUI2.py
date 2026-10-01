@@ -263,7 +263,6 @@ class AnnotationGUI:
         self.toolbar.update()
         self.toolbar.pack()
         self.canvas.draw()
-        # plt.close(fig)
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def add_annotation_to_meas(self):
