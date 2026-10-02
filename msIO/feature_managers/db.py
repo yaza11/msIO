@@ -19,6 +19,7 @@ from tqdm import tqdm
 from msIO import PeakList
 from msIO.environmental.sample import Sample
 from msIO.feature_managers.util_library import peaklist_to_spectrum
+from msIO.list_of_ions.base import PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
@@ -74,6 +75,8 @@ class FeatureManagerDB:
     _f_ids_sorted: np.ndarray[int] = None
 
     def __init__(self, path_file_db: str):
+        if not os.path.exists(path_file_db):
+            raise FileNotFoundError(f"File {path_file_db} does not exist!")
         self.path_file: str = path_file_db
 
     @property
@@ -224,6 +227,7 @@ class FeatureManagerDB:
             mzs: Iterable[float],
             max_dmz_da: float = None,
             max_dmz_ppm: float | int = None,
+            f_ids = None,
     ) -> list[list[int]]:
         """Returns the matched feature ids"""
         assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
@@ -238,13 +242,94 @@ class FeatureManagerDB:
         idcs_left = np.searchsorted(self.mzs_sorted, mzs - max_dmz_da, side='right')
         idcs_right = np.searchsorted(self.mzs_sorted, mzs + max_dmz_da, side='right')
 
-        f_ids: list[np.ndarray[int]] = [
+        f_ids_match: list[np.ndarray[int]] = [
             self.f_ids_sorted[idx_left:idx_right]
             for idx_left, idx_right in zip(idcs_left, idcs_right)
         ]
 
+        if f_ids is None:
+            f_ids = self.f_ids_sorted
+
+
         # convert types
-        return [[int(f_id) for f_id in _f_ids] for _f_ids in f_ids]
+        return [[int(f_id) for f_id in _f_ids if f_id in f_ids] for _f_ids in f_ids_match]
+
+    def add_neutral_losses(self, max_spectra_per_query: int = 5_000):
+        """Add neutral losses to peak table: mz - mz_pre (results in negative masses which are easy to filter out)"""
+
+        feature_ids = self.feature_ids.copy()
+
+        feature_id_chunks: list[list[int]] = [
+            feature_ids[i:i + max_spectra_per_query]
+            for i in range(0, len(feature_ids), max_spectra_per_query)
+        ]
+
+        with self.session_maker() as session:
+            # spectrum by spectrum
+            for chunk_index, feature_id_chunk in enumerate(feature_id_chunks):
+                stmt = (
+                    select(FeatureMgf.feature_id, PeakList)
+                    .select_from(MsSpec)
+                    .join(MsSpec.feature_mgf)
+                    .join(MsSpec.peaks)
+                    .options(selectinload(PeakList.peaks))
+                    .where(
+                        FeatureMgf.feature_id.in_(feature_id_chunk),
+                        MsSpec.ms_level == 2,
+                        MsSpec.peaks_id.is_not(None),
+                    )
+                )
+
+                # each tuple contains the feature id and peak list
+                peak_lists: list[tuple[int, PeakList]] = session.execute(stmt).all()
+                for f_id, peak_list in tqdm(
+                        peak_lists,
+                        desc=f'adding neutral losses (chunk {chunk_index + 1}/{len(feature_id_chunks)})',
+                        total=len(peak_lists)
+                ):
+                    mz_pre = self.mzs[f_id]
+                    for peak in list(peak_list.peaks):  # create a copy
+                        if (dmz:= (peak.mz - mz_pre)) > 0:  # exclude isotope peaks
+                            continue
+                        peak_loss = PeakFeature(
+                            mz=dmz,
+                            rt=peak.rt,
+                            ccs=peak.ccs,
+                            # annotation is different, so dont copy it
+                            intensity=peak.intensity,
+                            height=peak.height,
+                            area=peak.area,
+                            fwhm=peak.fwhm,
+                            snr=peak.snr,
+                            M=peak.M,
+                            adduct=peak.adduct
+                        )
+                        peak_list.peaks.append(peak_loss)
+                session.commit()
+
+    def filter_by_fragment_mz(self, fragment_mz: float, mz_tol_da, min_intensity: float = 100):
+        # find feature ids that have an MS2 peak with mz in the tolerance
+        stmt = (
+            select(FeatureMgf.feature_id)
+            .select_from(MsSpec)
+            .join(MsSpec.feature_mgf)
+            .join(MsSpec.peaks)
+            .join(PeakList.peaks)
+            .where(
+                MsSpec.ms_level == 2,
+                PeakFeature.mz.between(fragment_mz - mz_tol_da, fragment_mz + mz_tol_da),
+                PeakFeature.intensity.between(min_intensity, float('inf'))
+            )
+            .distinct()  # if multiple fragment peaks are in the tolerance
+        )
+
+        with self.session_maker() as session:
+            f_ids = session.execute(stmt).scalars().all()
+        return f_ids
+
+    def filter_by_neutral_loss(self, neutral_loss: float):
+        ...
+
 
     def _get_ms_spectra_limited_variable_number(
             self,
@@ -284,6 +369,9 @@ class FeatureManagerDB:
             intensity_limits: tuple = None
     ) -> dict[int, PeakList]:
         level = int(level)
+
+        if mz_limits is None:
+            mz_limits = (0, float('inf'))
 
         if level not in (1, 2):
             raise ValueError("level must be 1 or 2")
@@ -605,6 +693,7 @@ class Library(FeatureManagerDB):
                     feature_id=f_id_lib,
                     name=self.names.get(f_id_lib),
                     formula=self.formula_metaboscape.get(f_id_lib),
+                    adduct=self.adduct.get(f_id_lib),
                     ms2_score=ms2_score,
                     dmz_mda= (dmz := (mz_meas - mz_lib)) * 1e3,
                     dmz_ppm= dmz / mz_lib * 1e6,
@@ -716,7 +805,7 @@ class Library(FeatureManagerDB):
         ann_props.at['M / Da', ''] = str(round(M, 4))
         CCS = props['CCS']
         ann_props.at['CCS / A2', ''] = str(round(CCS, 2)) if CCS is not None else ''
-        ann_props.at['logP', ''] = str(round(props['xlogp'], 3))
+        ann_props.at['logP', ''] = str(round(props['xlogp'], 3)) if props['xlogp'] is not None else ''
         ann_props.at['Database', ''] = props['annotation_type']
 
         import textwrap
@@ -798,18 +887,49 @@ class Library(FeatureManagerDB):
             self.plot_compound_overview(f_id, axs=axs[:, i])
         return fig, axs
 
+def lib_match_result_to_table(results: dict) -> pd.DataFrame:
+    series = []
+    for f_id_meas, matches in results.items():
+        for match in matches:
+            series.append(pd.Series(name=f_id_meas, data=match))
+
+    match_table: pd.DataFrame = (
+        pd.concat(series, axis=1).T
+        .reset_index(drop=False, names='feature_id_meas')
+        .rename(columns={'feature_id': 'feature_id_lib'})
+        .astype({
+            'feature_id_meas': int,
+            'feature_id_lib': int,
+            'ms2_score': float,
+            'name': str,
+            'formula': str,
+            'dmz_mda': float,
+            'dmz_ppm': float,
+            'source_library': str,
+            'n_hits_ms2': int}
+        )
+        .sort_values(by=['feature_id_meas', 'ms2_score'])
+    )
+    return match_table
+
 
 
 if __name__ == '__main__':
     import time
     # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
     # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
-    meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features.db"
+    meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features_with_losses.db"
     lib_file = r"C:\Users\Yannick Zander\Downloads\library_arch_mp1_msdial_jul.sqlite"
+
     # lib_file = r"C:\Users\Yannick Zander\Downloads\library_ipl.sqlite"
 
     lib = Library(lib_file)
-    lib.compare_compounds([334520, 481732, 686932, 457245, 334430, 334431])
+
+    res = lib.find_matches_precursor([883.67777], max_dmz_da=5e-3)
+    names = [lib.names[f_id] for f_id in res[0]]
+
+    # f_ids = lib.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.001)
+    # lib.compare_compounds([334520, 481732, 686932, 457245, 334430, 334431])
     # lib.plot_compound_overview(427291)
     # lib.plot_compound_overview(427275)
     # lib.plot_compound_overview(427276)
@@ -826,7 +946,16 @@ if __name__ == '__main__':
     # lib = Library(lib_file)
     #
     # print('loading measurement')
-    # meas = FeatureManagerDB(meas_file)
+    meas = FeatureManagerDB(meas_file)
+    f_ids_meas = meas.find_matches_precursor([994.8128], 10e-3)
+
+    meas.compare_features(*f_ids_meas[0])
+    #
+    # frag = 373.368171
+    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=10, min_intensity=0)
+
+    # meas.add_neutral_losses()
+
     # mzs_meas: dict[int, float] = meas.mzs
     # ms2_meas = meas.get_ms_spectra(meas.feature_ids, level=2)
     #

@@ -191,9 +191,12 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
         if ax is None:
             _, ax = plt.subplots()
 
+        if len(self.peaks) == 0:
+            return ax
+
         if as_mirror:
             ints = [-i for i in self.intensities]
-            ints_max = min(ints)
+            ints_max = min(ints) if len(ints) > 0 else None
         else:
             ints = self.intensities
             ints_max = max(ints)

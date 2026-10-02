@@ -31,6 +31,7 @@ class AnnotationGUI:
         self.max_dmz_ppm = tk.StringVar(value="10.0")
         self.max_dmz_mda = tk.StringVar(value="")
         self.max_dmz_ms2_mda = tk.StringVar(value="10")
+        self.min_ms2_score = tk.StringVar(value="0")
         self.require_ms2 = tk.BooleanVar(value=False)
 
         self.meas = None
@@ -69,17 +70,21 @@ class AnnotationGUI:
         ttk.Label(parameter_frame, text="m/z tol. in mDa:").grid(row=0, column=2, sticky="w", padx=(10,0))
         ttk.Entry(parameter_frame, textvariable=self.max_dmz_mda, width=10).grid(row=0, column=3, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="m/z tol. for MS2 matches in mDa:").grid(row=0, column=4, sticky="w", padx=(10, 0))
-        ttk.Entry(parameter_frame, textvariable=self.max_dmz_ms2_mda, width=10).grid(row=0, column=5, padx=5, sticky="w")
+        ttk.Label(parameter_frame, text="m/z tol. for MS2 matches in mDa:").grid(row=1, column=0, sticky="w", padx=(10, 0))
+        ttk.Entry(parameter_frame, textvariable=self.max_dmz_ms2_mda, width=10).grid(row=1, column=1, padx=5, sticky="w")
 
-        ttk.Label(parameter_frame, text="metric for scoring MS2 matches").grid(row=0, column=6, sticky="w",
+        ttk.Label(parameter_frame, text="metric for scoring MS2 matches").grid(row=1, column=2, sticky="w",
                                                                                  padx=(10, 0))
         self.metric = ttk.Combobox(parameter_frame, values=['cosine_fwd', 'cosine_bwd', 'cosine_sim', 'modified_cosine_greedy'], width=10)
         self.metric.set('modified_cosine_greedy')
-        self.metric.grid(row=0, column=7, padx=5,sticky="w")
+        self.metric.grid(row=1, column=3, padx=5,sticky="w")
 
-        ttk.Checkbutton(parameter_frame, text="require_ms2", variable=self.require_ms2).grid(row=0, column=8, padx=(10, 0), sticky="w")
-        ttk.Button(parameter_frame, text="Search", command= self.run_find_matches).grid(row=0, column=9, padx=(10, 0), sticky="e")
+        ttk.Label(parameter_frame, text="min. MS2 score").grid(row=1, column=4, sticky="w", padx=(10, 0))
+        ttk.Entry(parameter_frame, textvariable=self.min_ms2_score, width=10).grid(row=1, column=5, sticky="w",
+                                                                                 padx=(10, 0))
+
+        ttk.Checkbutton(parameter_frame, text="require_ms2", variable=self.require_ms2).grid(row=1, column=6, padx=(10, 0), sticky="w")
+        ttk.Button(parameter_frame, text="Search", command= self.run_find_matches).grid(row=2, column=0, padx=(10, 0), sticky="e")
 
         #Database status
         self.database_status = ttk.Label(self.root, text="Please Load Database to begin.")
@@ -90,12 +95,13 @@ class AnnotationGUI:
         treeview_frame.pack(fill="both", expand=True)
 
         # this defines the order
-        self.tree_columns = ("feature_id_meas",  "name", "formula", "ms2_score", 'n_hits_ms2',
+        self.tree_columns = ("feature_id_meas",  "feature_id_lib", "name", "formula", "ms2_score", 'n_hits_ms2',
                              "dmz_mda", "dmz_ppm", 'source_library')
         self.tree = ttk.Treeview(treeview_frame, columns=self.tree_columns, show="headings", selectmode="browse")
 
         #Setting table column headers
         self.tree.heading("feature_id_meas", text="Measurement feature ID")
+        self.tree.heading("feature_id_lib", text="Library feature ID")
         self.tree.heading("name", text="Compound name")
         self.tree.heading("formula", text="Formula")
         self.tree.heading("ms2_score", text="MS2 score")
@@ -105,13 +111,14 @@ class AnnotationGUI:
         self.tree.heading("source_library", text="Source")
 
         #Setting column widths
-        self.tree.column("feature_id_meas", width=60, anchor="center")
-        self.tree.column("name", width=250, anchor="w")
-        self.tree.column("formula", width=100, anchor="w")
-        self.tree.column("ms2_score", width=60, anchor="e")
-        self.tree.column("n_hits_ms2", width=60, anchor="center")
-        self.tree.column("dmz_mda", width=60, anchor="e")
-        self.tree.column("dmz_ppm", width=60, anchor="e")
+        self.tree.column("feature_id_meas", width=40, anchor="center")
+        self.tree.column("feature_id_lib", width=40, anchor="center")
+        self.tree.column("name", width=120, anchor="w")
+        self.tree.column("formula", width=80, anchor="w")
+        self.tree.column("ms2_score", width=40, anchor="e")
+        self.tree.column("n_hits_ms2", width=40, anchor="e")
+        self.tree.column("dmz_mda", width=40, anchor="e")
+        self.tree.column("dmz_ppm", width=40, anchor="e")
         self.tree.column("source_library", width=250, anchor="w")
 
         scroll_bar = ttk.Scrollbar(treeview_frame, orient="vertical", command=self.tree.yview)
@@ -167,6 +174,7 @@ class AnnotationGUI:
         max_dmz_da: float = float(self.max_dmz_mda.get()) * 1e-3 if self.max_dmz_mda.get().strip() else None
         max_ms2_dmz_da: float = float(self.max_dmz_ms2_mda.get()) * 1e-3 if self.max_dmz_ms2_mda.get().strip() else None
         metric = self.metric.get()
+        min_ms2_score: float = float(self.min_ms2_score.get()) if self.min_ms2_score.get().strip() else None
 
         if (max_dmz_da is None and max_dmz_ppm is None) or (max_dmz_ppm is not None and max_dmz_da is not None):
             messagebox.showerror("Error", "Please provide either max_dmz_ppm or max_dmz_mda (but not both).")
@@ -182,6 +190,7 @@ class AnnotationGUI:
                 max_dmz_da=max_dmz_da,
                 max_ms2_dmz_da=max_ms2_dmz_da,
                 metric=metric,
+                min_ms2_score=min_ms2_score,
                 return_nhits_ms2=True,
                 ms2_spectra=self.ms2_spectra,
                 require_ms2=require_ms2)
@@ -192,28 +201,7 @@ class AnnotationGUI:
             return
 
         # turn results into dataframe
-        series = []
-        for f_id_meas, matches in self.current_matches.items():
-            for match in matches:
-                series.append(pd.Series(name=f_id_meas, data=match))
-
-        self.current_matches_table: pd.DataFrame = (
-            pd.concat(series, axis=1).T
-            .reset_index(drop=False, names='feature_id_meas')
-            .rename(columns={'feature_id': 'feature_id_lib'})
-            .astype({
-                'feature_id_meas': int,
-                'feature_id_lib': int,
-                'ms2_score': float,
-                'name': str,
-                'formula': str,
-                'dmz_mda': float,
-                'dmz_ppm': float,
-                'source_library': str,
-                'n_hits_ms2': int}
-            )
-            .sort_values(by=['feature_id_meas', 'ms2_score'])
-        )
+        self.current_matches_table = lib_match_result_to_table(self.current_matches)
         self.current_matches_table.loc[:, 'ms2_score'] = self.current_matches_table['ms2_score'].round(3)
         self.current_matches_table.loc[:, 'dmz_mda'] = self.current_matches_table['dmz_mda'].round(1).abs()
         self.current_matches_table.loc[:, 'dmz_ppm'] = self.current_matches_table['dmz_ppm'].round(1).abs()
