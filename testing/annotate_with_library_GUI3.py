@@ -597,7 +597,7 @@ class AnnotationGUI:
             return
 
         values = self.tree.item(selection[0], "values")
-        f_id_mas, f_id_lib = int(values[0]), int(values[1])
+        f_id_meas, f_id_lib = int(values[0]), int(values[1])
 
         confirm = messagebox.askyesno("Confirm", f"Assign {f_id_lib} to Feature {f_id_meas}?")
 
