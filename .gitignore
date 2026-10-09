@@ -3,6 +3,8 @@
 
 .idea/
 
+__pycache__/
+
 dists/
 build/
 msIO.egg-info/
