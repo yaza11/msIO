@@ -1,16 +1,10 @@
-import functools
-import sqlite3
 import pandas as pd
-import numpy as np
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from rdkit.sping.colors import black, orange
-
 from msIO.feature_managers.db import Library, FeatureManagerDB
-from testing.library.annotate_with_library import f_id_meas
 
 
 def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
