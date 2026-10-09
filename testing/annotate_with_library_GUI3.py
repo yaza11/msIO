@@ -216,7 +216,7 @@ class AnnotationGUI:
         except Exception as error:
             self.meas = None
             self.ms2_loading = False
-            messagebox.showerror("Error", f"Failed to load Measured Database:\n {e}")
+            messagebox.showerror("Error", f"Failed to load Measured Database:\n {error}")
 
     def load_ms2_spectra_worker(self, meas, load_number):
         try:
@@ -258,9 +258,7 @@ class AnnotationGUI:
             self.database_status.config(text=f"Library Database loaded: {path}")
         except Exception as error:
             self.lib = None
-            messagebox.showerror("Error", f"Failed to Load Library Database: \n{e}")
-
-
+            messagebox.showerror("Error", f"Failed to Load Library Database: \n{error}")
 
     def run_find_matches(self):
         if self.meas is None or self.lib is None:
