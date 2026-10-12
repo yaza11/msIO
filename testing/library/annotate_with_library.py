@@ -15,7 +15,13 @@ from msIO.features.sirius import CompoundCandidate
 from msIO.sql.session import get_sessionmaker
 
 
-def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
+def add_annotation_to_measured_db(
+        f_id_meas: int,
+        f_id_lib: int,
+        results: pd.DataFrame,
+        lib: Library,
+        meas: FeatureManagerDB
+) -> None:
     """Add a matched library entry to the measured database."""
     ms2_score: float = results.loc[
         (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib), 'ms2_score'

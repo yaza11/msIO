@@ -13,7 +13,7 @@ def get_engine(db_file: str):
     return create_engine(f"sqlite+pysqlite:///{db_path}", future=True)
 
 
-def get_sessionmaker(db_file: str):
+def get_sessionmaker(db_file: str) -> sessionmaker:
     """Return a sessionmaker bound to the SQLite database."""
     engine = get_engine(db_file)
     return sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)

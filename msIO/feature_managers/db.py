@@ -230,13 +230,18 @@ class FeatureManagerDB:
             f_ids = None,
     ) -> list[list[int]]:
         """Returns the matched feature ids"""
-        assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
-            'provide either max_dmz_mda or max_dmz_ppm (but not both)'
+        assert (max_dmz_da is not None) or (max_dmz_ppm is not None), \
+            'provide either max_dmz_mda or max_dmz_ppm'
 
         mzs = np.asarray(mzs)
 
+        # convert tolerances to Da, if both is provided, select the stricter one
         if max_dmz_da is None:
             max_dmz_da = mzs * (max_dmz_ppm * 1e-6)
+        elif (max_dmz_da is not None) and (max_dmz_ppm is not None):
+            max_dmz_da_from_ppm: np.ndarray = mzs * (max_dmz_ppm * 1e-6)
+            max_dmz_da_from_abs = np.full_like(mzs, max_dmz_da)
+            max_dmz_da = np.array([rel if rel < ab else ab for rel, ab in zip(max_dmz_da_from_ppm, max_dmz_da_from_abs)])
 
         # get all features that match the mz within the tolerance
         idcs_left = np.searchsorted(self.mzs_sorted, mzs - max_dmz_da, side='right')
@@ -307,7 +312,7 @@ class FeatureManagerDB:
                         peak_list.peaks.append(peak_loss)
                 session.commit()
 
-    def filter_by_fragment_mz(self, fragment_mz: float, mz_tol_da, min_intensity: float = 100):
+    def filter_by_fragment_mz(self, fragment_mz: float, mz_tol_da: float, min_intensity: float = 100.):
         # find feature ids that have an MS2 peak with mz in the tolerance
         stmt = (
             select(FeatureMgf.feature_id)
@@ -327,9 +332,8 @@ class FeatureManagerDB:
             f_ids = session.execute(stmt).scalars().all()
         return f_ids
 
-    def filter_by_neutral_loss(self, neutral_loss: float):
-        ...
-
+    def filter_by_neutral_loss(self, neutral_loss: float, mz_tol_da: float, min_intensity: float = 100.):
+        return self.filter_by_fragment_mz(-neutral_loss, mz_tol_da, min_intensity)
 
     def _get_ms_spectra_limited_variable_number(
             self,
@@ -510,8 +514,15 @@ class FeatureManagerDB:
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
-    def add_annotations_from_library(self, library: "Library", f_id_meas: int, f_id_lib: int, ms2_score: float = None):
-        with self.session_maker() as session:  # cannot use get_feature because session needs to remain active
+    def add_annotations_from_library(
+            self,
+            library: "Library",
+            f_id_meas: int,
+            f_id_lib: int,
+            ms2_score: float = None
+    ):
+        # cannot use get_feature because session needs to remain active
+        with self.session_maker() as session:
             opts = eager_options_for(FeatureCombined, strategy="selectin")
             f_meas: FeatureCombined = session.execute(
                 select(FeatureCombined)
@@ -534,6 +545,63 @@ class FeatureManagerDB:
             )
             f_meas.sirius.compound_candidates.append(compound_candidate_meas)
             session.commit()
+
+    def plot_scatter(
+            self,
+            add_annotations: bool = False,
+            highlight_features: Iterable[int] = None,
+            ax: plt.Axes = None
+    ) -> plt.Axes:
+        if ax is None:
+            _, ax = plt.subplots()
+
+        if highlight_features is None:
+            highlight_features = []
+        else:
+            highlight_features = list(highlight_features)
+
+        mzs_wo_highlight = [
+            mz
+            for f_id, mz in self.mzs.items()
+            if f_id not in highlight_features
+        ]
+        rts_wo_highlight = [
+            rt / 60
+            for f_id, rt in self.retention_times_in_seconds.items()
+            if f_id not in highlight_features
+        ]
+        mzs_w_highlight = [
+            mz
+            for f_id, mz in self.mzs.items()
+            if f_id in highlight_features
+        ]
+        rts_w_highlight = [
+            rt / 60
+            for f_id, rt in self.retention_times_in_seconds.items()
+            if f_id in highlight_features
+        ]
+
+        ax.scatter(rts_wo_highlight, mzs_wo_highlight, c='blue', s=10, alpha=.5)
+        ax.scatter(rts_w_highlight, mzs_w_highlight, c='red', s=20)
+        # add annotations
+        if add_annotations:
+            # all information is in compound_candidate table
+            with self.session_maker() as session:
+                cpd_candidates: list[CompoundCandidate] = (
+                    session.query(CompoundCandidate)
+                    .filter(CompoundCandidate.sirius_compound_folder.startswith('manual_library_annotation'))
+                    .all()
+                )
+
+                for cpd_candidate in cpd_candidates:
+                    f_id: int = cpd_candidate.feature_id
+                    ax.annotate(
+                        text=f'{cpd_candidate.name_sirius} {cpd_candidate.adduct_sirius}',
+                        xy=(self.retention_times_in_seconds[f_id] / 60, self.mzs[f_id])
+                    )
+
+        return ax
+
 
 
 class Library(FeatureManagerDB):
@@ -608,7 +676,7 @@ class Library(FeatureManagerDB):
             require_ms2: bool = False,
     ):
         """Find matches in the library for a list of provided m/z values. Optionally, also require MS2 matches."""
-        assert (max_dmz_da is None) ^ (max_dmz_ppm is None), \
+        assert (max_dmz_da is not None) or (max_dmz_ppm is not None), \
             'provide either max_dmz_mda or max_dmz_ppm (but not both)'
         if (as_dicts := isinstance(mzs, dict)) and (ms2_spectra is not None) and (not isinstance(ms2_spectra, dict)):
             raise ValueError('If mzs are provided as dict, ms2 must also be a dict')
@@ -913,22 +981,26 @@ def lib_match_result_to_table(results: dict) -> pd.DataFrame:
     return match_table
 
 
-
 if __name__ == '__main__':
     import time
     # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
     # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
-    meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features_with_losses.db"
-    lib_file = r"C:\Users\Yannick Zander\Downloads\library_arch_mp1_msdial_jul.sqlite"
+    # meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features_sirius_new.db"
+    # lib_file = r"C:\Users\Yannick Zander\Downloads\library_arch_mp1_msdial_jul.sqlite"
+    meas_file = r"C:\Users\yanni\Nextcloud2\Avin\database_gdgts.sqlite"
+    lib_file = r"C:\Users\yanni\Nextcloud2\Avin\archlipids_high_conf.sqlite"
 
     # lib_file = r"C:\Users\Yannick Zander\Downloads\library_ipl.sqlite"
 
-    lib = Library(lib_file)
+    # lib = Library(lib_file)
 
-    res = lib.find_matches_precursor([883.67777], max_dmz_da=5e-3)
-    names = [lib.names[f_id] for f_id in res[0]]
+    # res = lib.find_matches_precursor([883.67777], max_dmz_da=5e-3)
+    # names = [lib.names[f_id] for f_id in res[0]]
 
     # f_ids = lib.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.001)
+    # for f_id in f_ids:
+    #     lib.plot_compound_overview(f_id)
+    #     plt.show()
     # lib.compare_compounds([334520, 481732, 686932, 457245, 334430, 334431])
     # lib.plot_compound_overview(427291)
     # lib.plot_compound_overview(427275)
@@ -946,13 +1018,19 @@ if __name__ == '__main__':
     # lib = Library(lib_file)
     #
     # print('loading measurement')
-    meas = FeatureManagerDB(meas_file)
-    f_ids_meas = meas.find_matches_precursor([994.8128], 10e-3)
 
-    meas.compare_features(*f_ids_meas[0])
+    meas = FeatureManagerDB(meas_file)
+    frag = 373.3676
+    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.005)
+    nh3_loss = CompoundDict('NH3').mass
+    f_ids = meas.filter_by_neutral_loss(neutral_loss=nh3_loss, mz_tol_da=.005)
+
+    meas.plot_scatter(add_annotations=True, highlight_features=f_ids)
+    # f_ids_meas = meas.find_matches_precursor([994.8128], 10e-3)
     #
-    # frag = 373.368171
-    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=10, min_intensity=0)
+    # meas.compare_features(*f_ids_meas[0])
+    #
+    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=10e-3, min_intensity=0)
 
     # meas.add_neutral_losses()
 
