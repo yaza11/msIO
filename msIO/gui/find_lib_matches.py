@@ -11,24 +11,6 @@ from matplotlib.figure import Figure
 from msIO.feature_managers.db import Library, FeatureManagerDB, lib_match_result_to_table
 
 
-def add_annotation_to_measured_db(
-        f_id_meas: int,
-        f_id_lib: int,
-        results: pd.DataFrame,
-        lib: Library,
-        meas: FeatureManagerDB
-) -> None:
-    """Add a matched library entry to the measured database."""
-    mask_match: pd.Series = (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib)
-    if not mask_match.any():
-        ms2_score = float('nan')
-    else:
-        ms2_score: float = results.loc[
-            (results.feature_id_meas == f_id_meas) & (results.feature_id_lib == f_id_lib), 'ms2_score'
-        ].squeeze()
-    meas.add_annotations_from_library(lib, f_id_meas, f_id_lib, ms2_score)
-
-
 class AnnotationGUI:
     def __init__(self, root: tk.Tk):
         self.tk_root: tk.Tk = root
@@ -645,10 +627,16 @@ class AnnotationGUI:
         if not confirm:
             return
         try:
-            add_annotation_to_measured_db(f_id_meas, f_id_lib, self.current_matches_table, self.connected_library_db,
-                                          self.connected_measurement_db)
+            idx_ms2_score = self.tree_columns.index('ms2_score')
+            self.connected_measurement_db.add_annotations_from_library(
+                library=self.connected_library_db,
+                f_id_meas=f_id_meas,
+                f_id_lib=f_id_lib,
+                ms2_score=values[idx_ms2_score],
+            )
+            # add_annotation_to_measured_db(f_id_meas, f_id_lib, self.current_matches_table, self.connected_library_db,
+            #                               self.connected_measurement_db)
             messagebox.showinfo("Annotation", f"Annotation added for measured feature {f_id_meas}")
-
         except Exception as error:
             messagebox.showerror("Annotation Error", str(error))
 
