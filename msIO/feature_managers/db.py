@@ -259,9 +259,12 @@ class FeatureManagerDB:
         # convert types
         return [[int(f_id) for f_id in _f_ids if f_id in f_ids] for _f_ids in f_ids_match]
 
-    def add_neutral_losses(self, max_spectra_per_query: int = 5_000):
+    def add_neutral_losses(
+            self,
+            max_spectra_per_query: int = 5_000,
+            check_neutral_Losses_present = True
+    ):
         """Add neutral losses to peak table: mz - mz_pre (results in negative masses which are easy to filter out)"""
-
         feature_ids = self.feature_ids.copy()
 
         feature_id_chunks: list[list[int]] = [
@@ -296,6 +299,8 @@ class FeatureManagerDB:
                     for peak in list(peak_list.peaks):  # create a copy
                         if (dmz:= (peak.mz - mz_pre)) > 0:  # exclude isotope peaks
                             continue
+                        if check_neutral_Losses_present and peak.mz < 0:
+                            raise ValueError(f'Encountered negative peak m/z. This indicates that neutral losses have already been added.')
                         peak_loss = PeakFeature(
                             mz=dmz,
                             rt=peak.rt,
@@ -1020,6 +1025,7 @@ if __name__ == '__main__':
     # print('loading measurement')
 
     meas = FeatureManagerDB(meas_file)
+
     frag = 373.3676
     # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.005)
     nh3_loss = CompoundDict('NH3').mass
