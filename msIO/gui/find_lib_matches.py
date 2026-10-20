@@ -43,6 +43,15 @@ class AnnotationGUI:
         self.selected_feature_marker = None  # red circle around the feature selected in the table
         self.selected_feature_label = None
 
+        # match overview is built in a worker thread
+        self.match_plot_running: bool = False
+        self.pending_match_plot: dict = None  # kwargs for Library.plot_match of the latest request
+
+        # filters are applied while typing, after a short pause
+        self.live_filter_delay_ms: int = 300
+        self.live_filter_job: str = None
+        self.last_filter_values: tuple[str, ...] = None
+
         self.measurement_load_number: int = 0
 
         # colors that will be used in the matching table
@@ -195,6 +204,14 @@ class AnnotationGUI:
         self.tk_filter_max_mz = ttk.Entry(row2, width=10)
         self.tk_filter_max_mz.grid(row=0, column=7, padx=(0, 0), pady=3)
 
+        self.tk_filter_entries: list[ttk.Entry] = [
+            self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas, self.tk_filter_name,
+            self.tk_filter_min_rt, self.tk_filter_max_rt, self.tk_filter_subformula,
+            self.tk_filter_ms2_score, self.tk_filter_n_ms2_hits, self.tk_filter_min_mz, self.tk_filter_max_mz
+        ]
+        for entry in self.tk_filter_entries:
+            entry.bind("<KeyRelease>", self.on_edit_filter)
+
         ttk.Button(row3, text="Update filters", command=self.on_click_apply_filters).grid(
             row=0, column=0, padx=5, pady=3
         )
@@ -245,7 +262,7 @@ class AnnotationGUI:
         self.tk_status_field.pack(anchor="sw", padx=15, pady=3)
 
     def _create_scatter_plot_panel(self, parent):
-        tk_scatter_panel = tk.LabelFrame(parent, text="Scatter Plot (RT vs m/z)")
+        tk_scatter_panel = tk.LabelFrame(parent, text="Scatter Plot (m/z vs RT)")
         parent.add(tk_scatter_panel, weight=1)
 
         tk_scatter_buttons = ttk.Frame(tk_scatter_panel, padding=5)
@@ -284,9 +301,9 @@ class AnnotationGUI:
             self.filtered_results = self.current_matches_table.copy()
             self.clear_tree_view_match_results()
 
-            # scatter plot belongs to the previous database
+            # replace the scatter plot of the previous database
             self.highlight_fids = None
-            self._destroy_scatter_plot()
+            self.plot_scatter()
 
             self.tk_status_field.config(text=f"Measured Database loaded: {path}")
 
@@ -435,7 +452,14 @@ class AnnotationGUI:
             self.tk_initialize_matching.config(state="normal")
 
     # Filter Results
-    def on_click_apply_filters(self, show_empty_message=True):
+    def on_click_apply_filters(self, show_empty_message=True, show_dialogs=True):
+        def report_invalid(title: str, text: str):
+            # while typing, half-entered values are expected, so don't open a dialog for every key stroke
+            if show_dialogs:
+                messagebox.showerror(title, text)
+            else:
+                self.tk_status_field.config(text=f"Filters not updated: {text}")
+
         if self.current_matches_table.empty:
             self.filtered_results = self.current_matches_table.copy()
             self.display_dataframe(self.filtered_results)
@@ -450,7 +474,7 @@ class AnnotationGUI:
                 min_f_id_meas = int(min_f_id_meas)
                 mask &= filtered_matches.feature_id_meas >= min_f_id_meas
             except ValueError:
-                messagebox.showerror('Value Error', 'Minimum ID must be a whole number.')
+                report_invalid('Value Error', 'Minimum ID must be a whole number.')
                 return
 
         if max_f_id_meas := self.tk_filter_max_f_id_meas.get().strip():
@@ -458,7 +482,7 @@ class AnnotationGUI:
                 max_f_id_meas = int(max_f_id_meas)
                 mask &= filtered_matches.feature_id_meas <= max_f_id_meas
             except ValueError:
-                messagebox.showerror('Value Error', 'Maximum ID must be a whole number.')
+                report_invalid('Value Error', 'Maximum ID must be a whole number.')
                 return
 
         if name_substrings := self.tk_filter_name.get().strip():
@@ -471,13 +495,15 @@ class AnnotationGUI:
                 min_rt = float(min_rt)
                 mask &= filtered_matches.RT >= min_rt
             except ValueError:
-                messagebox.showerror('Value Error', 'Minimum RT must be a number.')
+                report_invalid('Value Error', 'Minimum RT must be a number.')
+                return
         if max_rt := self.tk_filter_max_rt.get().strip():
             try:
                 max_rt = float(max_rt)
                 mask &= filtered_matches.RT <= max_rt
             except ValueError:
-                messagebox.showerror('Value Error', 'Maximum RT must be a whole number.')
+                report_invalid('Value Error', 'Maximum RT must be a number.')
+                return
 
         if subformula := self.tk_filter_subformula.get().strip():
             try:
@@ -494,7 +520,7 @@ class AnnotationGUI:
                         mask_f.append(True)
                 mask &= np.array(mask_f)
             except Exception as e:
-                messagebox.showerror('Invalid Formula', f"Invalid formula: {e}")
+                report_invalid('Invalid Formula', f"Invalid formula: {e}")
                 return
 
         if min_ms2_score := self.tk_filter_ms2_score.get().strip():
@@ -502,14 +528,16 @@ class AnnotationGUI:
                 min_ms2_score = float(min_ms2_score)
                 mask &= filtered_matches.ms2_score >= min_ms2_score
             except ValueError:
-                messagebox.showerror('Value Error', 'Minimum MS2 score must be a number.')
+                report_invalid('Value Error', 'Minimum MS2 score must be a number.')
+                return
 
         if min_ms2_hits := self.tk_filter_n_ms2_hits.get().strip():
             try:
                 min_ms2_hits = int(min_ms2_hits)
                 mask &= filtered_matches.n_hits_ms2 >= min_ms2_hits
             except ValueError:
-                messagebox.showerror('Value Error', 'Minimum MS2 hits must be a whole number.')
+                report_invalid('Value Error', 'Minimum MS2 hits must be a whole number.')
+                return
 
         if min_mz := self.tk_filter_min_mz.get().strip():
             try:
@@ -517,7 +545,8 @@ class AnnotationGUI:
                 mask &= filtered_matches.feature_id_meas.apply(
                     lambda f_id: self.connected_measurement_db.mzs[f_id]) >= min_mz
             except ValueError:
-                messagebox.showerror('Value Error', 'Minimum m/z must be a number.')
+                report_invalid('Value Error', 'Minimum m/z must be a number.')
+                return
 
         if max_mz := self.tk_filter_max_mz.get().strip():
             try:
@@ -525,7 +554,8 @@ class AnnotationGUI:
                 mask &= filtered_matches.feature_id_meas.apply(
                     lambda f_id: self.connected_measurement_db.mzs[f_id]) <= max_mz
             except ValueError:
-                messagebox.showerror('Value Error', 'Maximum m/z must be a number.')
+                report_invalid('Value Error', 'Maximum m/z must be a number.')
+                return
 
         self.filtered_results = filtered_matches.loc[mask, :].reset_index(drop=True)
         self.display_dataframe(self.filtered_results)
@@ -535,7 +565,24 @@ class AnnotationGUI:
 
         elif not self.filtered_results.empty:
             self.tk_status_field.config(
-                text=f"Showing {len(self.filtered_results)}" f"of {len(self.current_matches_table)} matches.")
+                text=f"Showing {len(self.filtered_results)} of {len(self.current_matches_table)} matches.")
+
+    def _get_filter_values(self) -> tuple[str, ...]:
+        return tuple(entry.get().strip() for entry in self.tk_filter_entries)
+
+    def on_edit_filter(self, event=None):
+        # keys like Tab or arrows don't change the filters
+        if self._get_filter_values() == self.last_filter_values:
+            return
+        # restart the timer on every key stroke, so filtering only happens once typing pauses
+        if self.live_filter_job is not None:
+            self.tk_root.after_cancel(self.live_filter_job)
+        self.live_filter_job = self.tk_root.after(self.live_filter_delay_ms, self.apply_live_filters)
+
+    def apply_live_filters(self):
+        self.live_filter_job = None
+        self.last_filter_values = self._get_filter_values()
+        self.on_click_apply_filters(show_dialogs=False)
 
     def clear_filters(self):
         self.filtered_results = self.current_matches_table.copy()
@@ -626,6 +673,55 @@ class AnnotationGUI:
             return
 
         mz_tol_da = max(max_dmz_da, max_dmz_ppm * 1e-6 * self.connected_measurement_db.mzs[f_id_meas])
+
+        # building the figure is slow, so do it in a worker thread and only attach it to tk in the main thread
+        self.pending_match_plot = dict(
+            f_id_lib=f_id_lib,
+            f_id_meas=f_id_meas,
+            meas=self.connected_measurement_db,
+            mz_tol_da=mz_tol_da,
+            annotation_relative_cutoff=0.3,  # TODO: turn this into slider
+            match_result=match_result,
+        )
+        self.tk_status_field.config(text=f"Plotting match {f_id_meas} -> {f_id_lib} ...")
+        # only one worker at a time, a running worker picks up the latest pending request when done
+        if not self.match_plot_running:
+            self._start_match_plot_worker()
+
+    def _start_match_plot_worker(self):
+        kwargs, self.pending_match_plot = self.pending_match_plot, None
+        self.match_plot_running = True
+        threading.Thread(
+            target=self.plot_match_worker,
+            args=(self.connected_library_db, kwargs),
+            daemon=True
+        ).start()
+
+    def plot_match_worker(self, library: Library, kwargs: dict):
+        fig = Figure(figsize=(15, 15))
+        try:
+            library.plot_match(fig=fig, **kwargs)
+            error_text = None
+        except Exception as error:
+            error_text = str(error)
+
+        try:
+            self.tk_root.after(0, lambda: self.finish_match_plot(fig, kwargs, error_text))
+        except (tk.TclError, RuntimeError):
+            pass
+
+    def finish_match_plot(self, fig: Figure, kwargs: dict, error_text: str | None):
+        self.match_plot_running = False
+        # selection changed while plotting, skip this figure and plot the latest selection instead
+        if self.pending_match_plot is not None:
+            self._start_match_plot_worker()
+            return
+
+        if error_text is not None:
+            self.tk_status_field.config(text="Could not plot the selected match.")
+            messagebox.showerror("Plot Error", f"Could not plot the selected match:\n{error_text}")
+            return
+
         # Remove the previous canvas
         if self.canvas is not None:
             self.canvas.get_tk_widget().destroy()
@@ -634,22 +730,13 @@ class AnnotationGUI:
             self.toolbar.destroy()
             self.toolbar = None
 
-        fig = Figure(figsize=(15, 15))
-        self.connected_library_db.plot_match(
-            f_id_lib=f_id_lib,
-            f_id_meas=f_id_meas,
-            meas=self.connected_measurement_db,
-            mz_tol_da=mz_tol_da,
-            annotation_relative_cutoff=0.3,  # TODO: turn this into slider
-            match_result=match_result,
-            fig=fig
-        )
         self.canvas = FigureCanvasTkAgg(fig, master=self.tk_plot_frame)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.tk_plot_frame)
         self.toolbar.update()
         self.toolbar.pack()
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.tk_status_field.config(text=f"Plotted match {kwargs['f_id_meas']} -> {kwargs['f_id_lib']}.")
 
     def add_annotation_to_meas(self):
         selection = self.tk_tree_view.selection()
@@ -813,8 +900,10 @@ class AnnotationGUI:
             return None
 
     def on_select_match_result(self, event=None):
+        # also fired with an empty selection when the table is refilled
         if (f_id_meas := self._get_selected_f_id_meas()) is not None:
             self.highlight_selected_feature(f_id_meas)
+            self.plot_match()
 
     def on_click_scatter(self, event):
         # ignore clicks outside the axes or while zooming / panning with the toolbar
