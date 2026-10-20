@@ -7,6 +7,7 @@ from msIO.feature_managers.db import Library
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import matplotlib.pyplot as plt
 
+
 class LibraryNameSearch:
     def __init__(self, root):
         self.root = root
@@ -22,25 +23,26 @@ class LibraryNameSearch:
 
     def _create_gui(self):
         database_frame = tk.Frame(self.root)
-        database_frame.pack(fill = tk.X, padx=10, pady = 10)
-        self.select_database_button = tk.Button(database_frame, text = "Select SQLite Database", command = self.select_database)
-        self.select_database_button.pack(side = tk.LEFT, padx=5)
-        self.database_label = tk.Label(database_frame, text = "Database: None", anchor = "w")
-        self.database_label.pack(side = tk.LEFT, padx=10)
+        database_frame.pack(fill=tk.X, padx=10, pady=10)
+        self.select_database_button = tk.Button(database_frame, text="Select SQLite Database",
+                                                command=self.select_database)
+        self.select_database_button.pack(side=tk.LEFT, padx=5)
+        self.database_label = tk.Label(database_frame, text="Database: None", anchor="w")
+        self.database_label.pack(side=tk.LEFT, padx=10)
 
-        #Feature info
-        self.feature_label = tk.Label(database_frame, text="Number of features: -", anchor = "w")
+        # Feature info
+        self.feature_label = tk.Label(database_frame, text="Number of features: -", anchor="w")
         self.feature_label.pack(padx=15)
 
-        #Compound search
-        search_frame = tk.LabelFrame(self.root, text = "Compound Search")
-        search_frame.pack(fill = tk.X, padx=10, pady = 10)
+        # Compound search
+        search_frame = tk.LabelFrame(self.root, text="Compound Search")
+        search_frame.pack(fill=tk.X, padx=10, pady=10)
 
-        name_label = tk.Label(search_frame, text = "Name:")
-        name_label.grid(row = 0, column = 0, padx=5, pady=10)
+        name_label = tk.Label(search_frame, text="Name:")
+        name_label.grid(row=0, column=0, padx=5, pady=10)
 
         self.name_entry = tk.Entry(search_frame, width=40)
-        self.name_entry.grid(row = 0, column = 1, padx=5, pady=10)
+        self.name_entry.grid(row=0, column=1, padx=5, pady=10)
 
         # Case Sensitive Checkbox
         self.is_case_sensitive_var = tk.BooleanVar(value=False, name='Case sensitive?')
@@ -64,42 +66,44 @@ class LibraryNameSearch:
         )
         exact_match_checkbox.grid(row=0, column=3, padx=5, pady=10, sticky="w")
 
-        #Search Button
-        self.search_button = tk.Button(search_frame, text = "Search", command = self.search_compound)
-        self.search_button.grid(row = 0, column = 4, padx=5, pady=10)
+        # Search Button
+        self.search_button = tk.Button(search_frame, text="Search", command=self.search_compound)
+        self.search_button.grid(row=0, column=4, padx=5, pady=10)
 
-        #Search Results
-        result_label = tk.Label(search_frame, text = "Result:")
-        result_label.grid(row = 1, column = 0, padx=5, pady=5, sticky = "nw")
-        self.result_listbox = tk.Listbox(search_frame, height = 5, width = 80)
-        self.result_listbox.grid(row = 1, column = 1, columnspan = 2, padx=5, pady=5, sticky = "ew")
+        # Search Results
+        result_label = tk.Label(search_frame, text="Result:")
+        result_label.grid(row=1, column=0, padx=5, pady=5, sticky="nw")
+        self.result_listbox = tk.Listbox(search_frame, height=5, width=80)
+        self.result_listbox.grid(row=1, column=1, columnspan=2, padx=5, pady=5, sticky="ew")
 
-        #Plot Button
-        self.plot_button = tk.Button(search_frame, text = "Plot selected compound", command = self.plot_selected_compound)
-        self.plot_button.grid(row = 2, column = 1, padx=5, pady=10, sticky = "w")
+        # Plot Button
+        self.plot_button = tk.Button(search_frame, text="Plot selected compound", command=self.plot_selected_compound)
+        self.plot_button.grid(row=2, column=1, padx=5, pady=10, sticky="w")
 
-        #Plot Area
+        # Plot Area
         self.plot_frame = tk.LabelFrame(self.root, text="Compound Overview")
-        self.plot_frame.pack(fill = tk.BOTH, expand=True, padx=10, pady=10)
+        self.plot_frame.pack(fill='both', expand=True, padx=10, pady=10)
 
-    #Select database
+    # Select database
     def select_database(self):
-        db_file = filedialog.askopenfilename(title="Select SQLite library", filetypes=[("SQLite files", "*.sqlite"), ("SQLite database", "*.db"), ("All files", "*")])
+        db_file = filedialog.askopenfilename(title="Select SQLite library",
+                                             filetypes=[("SQLite files", "*.sqlite"), ("SQLite database", "*.db"),
+                                                        ("All files", "*")])
 
         if not db_file:
             return
         try:
             self.library = Library(db_file)
-            #Display database path
-            self.database_label.config(text = f"Connected to database: {db_file}")
+            # Display database path
+            self.database_label.config(text=f"Connected to database: {db_file}")
 
-            #Display features
+            # Display features
             self.feature_label.config(text=f"Number of features:" f"{len(self.library.feature_ids)}")
 
-            #Remove previous search results
+            # Remove previous search results
             self.result_listbox.delete(0, tk.END)
 
-            #Reset stored search result
+            # Reset stored search result
             self.search_results = []
             print("Library opened successfully")
             print("Number of features: ", len(self.library.feature_ids))
@@ -108,13 +112,12 @@ class LibraryNameSearch:
             messagebox.showerror("Error", f"Could not open the database:\n\n{e}")
             print("Database error:", e)
 
-
     def search_compound(self):
         if self.library is None:
             messagebox.showerror("No database", "Please select a SQLite database")
             return
 
-        #Get compound name
+        # Get compound name
         compound_name: str = self.name_entry.get().strip()
         is_case_sensitive: bool = self.is_case_sensitive_var.get()
         is_exact_name_match: bool = self.is_exact_name_match.get()
@@ -133,15 +136,15 @@ class LibraryNameSearch:
             print("Search Result:")
             print(self.search_results)
 
-            #Clear old result
+            # Clear old result
             self.result_listbox.delete(0, tk.END)
 
-            #Checking if nothing is found
+            # Checking if nothing is found
             if not self.search_results:
                 messagebox.showerror("No results", f"No compound found for:\n{compound_name}")
                 return
 
-            #Display results
+            # Display results
             for result in self.search_results:
                 r_in_list = f'{self.library.names[result]} {self.library.adduct[result]}'
                 self.result_listbox.insert(tk.END, r_in_list)
@@ -160,7 +163,7 @@ class LibraryNameSearch:
             messagebox.showerror("No results", "Please search for a compound first")
             return
 
-        #Find selected item
+        # Find selected item
         selected_index: int = self.result_listbox.curselection()[0]
         print(selected_index)
         if selected_index is None:
@@ -173,7 +176,7 @@ class LibraryNameSearch:
         print(selected_result)
 
         try:
-            #Using selected result as feature ID
+            # Using selected result as feature ID
             feature_id = selected_result
             # print("Feature ID used for plotting:", feature_id)
 
@@ -185,19 +188,19 @@ class LibraryNameSearch:
                 self.toolbar.destroy()
                 self.toolbar = None
 
-            #Creating matplotlib figure
+            # Creating matplotlib figure
             fig = Figure(figsize=(10, 5))
             axs = fig.subplots(1, 2)
-            #Asking msIO to create compound overview
+            # Asking msIO to create compound overview
             self.library.plot_compound_overview(feature_id, axs=axs)
 
-            #Putting Matplotlib inside the Tkinter
+            # Putting Matplotlib inside the Tkinter
             self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
             self.toolbar = NavigationToolbar2Tk(self.canvas, self.root)
             self.toolbar.update()
             self.toolbar.pack()
             self.canvas.draw()
-            self.canvas.get_tk_widget().pack(fill = tk.BOTH, expand=True)
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
             print("Compound overview displayed")
 
         except Exception as e:
