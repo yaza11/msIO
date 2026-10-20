@@ -488,6 +488,7 @@ class AnnotationGUI:
 
         self.filtered_results = filtered_matches.loc[mask, :].reset_index(drop=True)
         self.display_dataframe(self.filtered_results)
+        self.update_scatter_filter_markers()
         if show_empty_message and self.filtered_results.empty:
             self.tk_status_field.config(text=f"No matches meet the current filters.")
 
@@ -498,6 +499,7 @@ class AnnotationGUI:
     def clear_filters(self):
         self.filtered_results = self.current_matches_table.copy()
         self.display_dataframe(self.filtered_results)
+        self.update_scatter_filter_markers()
         self.tk_status_field.config(text=f"Showing all {len(self.current_matches_table)} matches.")
 
     # def sort_results(self, column):
@@ -639,6 +641,170 @@ class AnnotationGUI:
             messagebox.showinfo("Annotation", f"Annotation added for measured feature {f_id_meas}")
         except Exception as error:
             messagebox.showerror("Annotation Error", str(error))
+
+    # Scatter plot
+    def _get_rt_mz(self, f_id: int) -> tuple[float, float] | None:
+        """RT in minutes (as in FeatureManagerDB.plot_scatter) and m/z of a measured feature."""
+        rt = self.connected_measurement_db.retention_times_in_seconds.get(f_id)
+        mz = self.connected_measurement_db.mzs.get(f_id)
+        if rt is None or mz is None:
+            return None
+        return rt / 60, mz
+
+    def _destroy_scatter_plot(self):
+        if self.scatter_canvas is not None:
+            self.scatter_canvas.get_tk_widget().destroy()
+            self.scatter_canvas = None
+        if self.scatter_toolbar is not None:
+            self.scatter_toolbar.destroy()
+            self.scatter_toolbar = None
+        self.scatter_ax = None
+        self.filtered_features_marker = None
+        self.selected_feature_marker = None
+        self.selected_feature_label = None
+
+    def plot_scatter(self):
+        if self.connected_measurement_db is None:
+            messagebox.showerror("Error", "Please load a measured database first")
+            return
+
+        self._destroy_scatter_plot()
+
+        fig = Figure(figsize=(7, 6))
+        self.scatter_ax = fig.add_subplot(111)
+        try:
+            self.connected_measurement_db.plot_scatter(
+                add_annotations=self.tk_show_annotations.get(),
+                highlight_features=self.highlight_fids,
+                ax=self.scatter_ax
+            )
+        except Exception as error:
+            self.scatter_ax = None
+            messagebox.showerror("Error", f"Could not render the scatter plot:\n{error}")
+            return
+        self.scatter_ax.set_xlabel("Retention time (min)")
+        self.scatter_ax.set_ylabel("m/z")
+        fig.tight_layout()
+
+        self.scatter_canvas = FigureCanvasTkAgg(fig, master=self.tk_scatter_plot_frame)
+        self.scatter_toolbar = NavigationToolbar2Tk(self.scatter_canvas, self.tk_scatter_plot_frame)
+        self.scatter_toolbar.update()
+        self.scatter_toolbar.pack()
+        self.scatter_canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.scatter_canvas.mpl_connect('button_press_event', self.on_click_scatter)
+
+        self.update_scatter_filter_markers()
+        if (f_id_meas := self._get_selected_f_id_meas()) is not None:
+            self.highlight_selected_feature(f_id_meas)
+        self.scatter_canvas.draw()
+        self.tk_status_field.config(text="Scatter plot rendered. Click any point to filter the table.")
+
+    def refresh_scatter_plot(self):
+        # only redraw if there is a scatter plot already
+        if self.scatter_ax is not None:
+            self.plot_scatter()
+
+    def on_click_neutral_loss_filter(self):
+        if self.connected_measurement_db is None:
+            messagebox.showerror("Error", "Please load a measured database first")
+            return
+        try:
+            self.highlight_fids = self.connected_measurement_db.filter_by_neutral_loss(
+                neutral_loss=CompoundDict('NH3').mass, mz_tol_da=5e-3
+            )
+        except Exception as error:
+            messagebox.showerror("Error", f"Could not apply neutral loss filter:\n{error}")
+            return
+        self.plot_scatter()
+        self.tk_status_field.config(text=f"Highlighted {len(self.highlight_fids)} features with NH3 loss.")
+
+    def on_click_remove_highlight(self):
+        self.highlight_fids = None
+        self.refresh_scatter_plot()
+
+    def update_scatter_filter_markers(self):
+        """Circle features of the filtered table in black (only if a filter removes rows)."""
+        if self.scatter_ax is None:
+            return
+        for artist in (self.filtered_features_marker, self.selected_feature_marker, self.selected_feature_label):
+            if artist is not None:
+                artist.remove()
+        self.filtered_features_marker = self.selected_feature_marker = self.selected_feature_label = None
+
+        if 0 < len(self.filtered_results) < len(self.current_matches_table):
+            points = [self._get_rt_mz(f_id) for f_id in self.filtered_results.feature_id_meas.unique()]
+            points = [p for p in points if p is not None]
+            if points:
+                rts, mzs = zip(*points)
+                self.filtered_features_marker = self.scatter_ax.scatter(
+                    rts, mzs, s=120, facecolors='none', edgecolors='black', linewidths=2, zorder=10, label='Library match'
+                )
+                self.scatter_ax.legend(loc='upper right')
+        self.scatter_canvas.draw_idle()
+
+    def highlight_selected_feature(self, f_id_meas: int):
+        """Draw a red circle and label around the given feature."""
+        if self.scatter_ax is None or (point := self._get_rt_mz(f_id_meas)) is None:
+            return
+        for artist in (self.selected_feature_marker, self.selected_feature_label):
+            if artist is not None:
+                artist.remove()
+
+        rt, mz = point
+        self.selected_feature_marker = self.scatter_ax.scatter(
+            [rt], [mz], s=300, facecolors="none", edgecolors="red", linewidths=2, zorder=10, label='Selected feature'
+        )
+        self.scatter_ax.legend(loc='upper right')
+        # self.selected_feature_label = self.scatter_ax.annotate(
+        #     f"ID {f_id_meas}\nRT {rt:.2f}, m/z {mz:.4f}",
+        #     xy=(rt, mz), xytext=(12, 12), textcoords="offset points", fontsize=8, zorder=11,
+        #     bbox=dict(boxstyle="round", fc="white", ec="red", alpha=0.9)
+        # )
+        self.scatter_canvas.draw_idle()
+
+    def _get_selected_f_id_meas(self) -> int | None:
+        selection = self.tk_tree_view.selection()
+        if not selection:
+            return None
+        try:
+            return int(self.tk_tree_view.item(selection[0], "values")[0])
+        except (ValueError, IndexError, TypeError):
+            return None
+
+    def on_select_match_result(self, event=None):
+        if (f_id_meas := self._get_selected_f_id_meas()) is not None:
+            self.highlight_selected_feature(f_id_meas)
+
+    def on_click_scatter(self, event):
+        # ignore clicks outside the axes or while zooming / panning with the toolbar
+        if event.inaxes is not self.scatter_ax or self.scatter_toolbar.mode:
+            return
+
+        target_fids = self.highlight_fids if self.highlight_fids else self.connected_measurement_db.feature_ids
+        points = {f_id: p for f_id in target_fids if (p := self._get_rt_mz(f_id)) is not None}
+        if not points:
+            return
+        f_ids = np.array(list(points.keys()))
+        rts, mzs = np.array(list(points.values())).T
+
+        # RT and m/z have different scales, so measure distance relative to the visible axis range
+        x_min, x_max = self.scatter_ax.get_xlim()
+        y_min, y_max = self.scatter_ax.get_ylim()
+        distances = ((rts - event.xdata) / (x_max - x_min)) ** 2 + ((mzs - event.ydata) / (y_max - y_min)) ** 2
+        closest_f_id = int(f_ids[np.argmin(distances)])
+
+        # filter the table to the clicked feature
+        for entry in (self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas):
+            entry.delete(0, tk.END)
+            entry.insert(0, str(closest_f_id))
+        self.on_click_apply_filters(show_empty_message=False)
+        self.highlight_selected_feature(closest_f_id)
+
+        rt, mz = points[closest_f_id]
+        n_matches = len(self.filtered_results)
+        self.tk_status_field.config(
+            text=f"Selected feature {closest_f_id} (RT {rt:.2f} min, m/z {mz:.4f}) with {n_matches} matches."
+        )
 
 
 if __name__ == "__main__":
