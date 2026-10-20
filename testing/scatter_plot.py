@@ -1,25 +1,28 @@
-import functools
-import sqlite3
+"""
+I found about this new tool yesterday which is 'lazy import'.
+This tool actually increases the processing speed by importing only those
+libraries which are required and ignore others. This tool can only be used with Pythin 3.15 version.
+So if we update python and its libraries and use this tool and this may increase the speed of our GUI.
+"""
+
+import traceback #I have added it to print full tracebacks for hidden errors
 import pandas as pd
 import numpy as np
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
 import matplotlib.pyplot as plt
+from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-from rdkit.sping.colors import black, orange
-
 from msIO.feature_managers.db import Library, FeatureManagerDB
-#from testing.library.annotate_with_library import f_id_meas
-# from testing.mz_rt_plot_panel import nh3_loss
-
+#from testing.library.annotate_with_library import f_id_measfrom testing.mz_rt_plot_panel import nh3_loss, f_id_meas
 
 def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
     """Add a matched library entry to the measured database."""
-    selected_score  = results.loc[(results["feature_id_meas"] == f_id_meas)] & (results["feature_id_lib"] == f_id_lib), "ms2_score"
+    selected_score  = results.loc[(results["feature_id_meas"] == f_id_meas) & (results["feature_id_lib"] == f_id_lib), "ms2_score"]
 
-    ms2_score: float = (
-        selected_score.loc[0]
+    ms2_score: float= (
+        selected_score.iloc[0]
         if not selected_score.empty
         else float("nan")
     )
@@ -51,10 +54,16 @@ class AnnotationGUI:
         self.canvas = None
 
         self.ms2_spectra = None
-        self.ms2_loading = False,
+        self.ms2_loading = False
         self.ms2_loading_error = None
 
         self.measurement_load_number = 0
+
+        self.highlight_fids = None
+        self.show_annotation = True
+        self.selected_feature_marker = None #the red circle (or black for the filtered features)
+        self.scatter_fig = None
+        self.scatter_ax = None
 
         self.feature_colors = ["red", "green", "blue", "yellow", "white", "orange"]
         self.sort_reverse = {}
@@ -142,6 +151,9 @@ class AnnotationGUI:
 
         self.columns = ("feature_id_meas", "feature_id_lib", "name","formula", "ms2_score", "dmz_da", "dmz_ppm", 'source_library', 'n_hits_ms2')
         self.tree = ttk.Treeview(treeview_frame, columns=self.columns, show="headings", selectmode="browse")
+        self.tree.bind("<<TreeviewSelect>>", self.on_result_selected)
+
+
 
         headings = {"feature_id_meas": "Measurement feature ID",
                     "feature_id_lib": "Lib feature ID",
@@ -230,20 +242,26 @@ class AnnotationGUI:
             self.visible_results = self.current_matches_table.copy()
             self.clear_tree()
 
+            self.scatter_ax = None
+            self.selected_feature_marker = None
+            self.highlight_fids = None
+
+
             self.database_status.config(text=f"Measured Database loaded: {path}")
 
             #Retreiving spectra\
-            threading.Thread(target=self.load_ms2_spectra_worker, args = (self.meas, load_number), daemon=True).start()
+            threading.Thread(target=self.load_ms2_spectra_worker, args = (path, load_number), daemon=True).start()
 
 
         except Exception as error:
             self.meas = None
             self.ms2_loading = False
-            messagebox.showerror("Error", f"Failed to load Measured Database:\n {e}")
+            messagebox.showerror("Error", f"Failed to load Measured Database:\n {error}")
 
-    def load_ms2_spectra_worker(self, meas, load_number):
+    def load_ms2_spectra_worker(self, path, load_number):
         try:
-            spectra = meas.get_ms_spectra(meas.feature_ids, level=2)
+            worker_meas = FeatureManagerDB(path)
+            spectra = worker_meas.get_ms_spectra(worker_meas.feature_ids, level=2)
             error_text = None
         except Exception as error:
             spectra = None
@@ -251,7 +269,7 @@ class AnnotationGUI:
 
         try:
             self.root.after(0, lambda: self.finish_ms2_loading(load_number, spectra, error_text))
-        except tk.TclError: #Got to know wbout this from Stackoverflow
+        except tk.TclError: #Got to know about this from Stackoverflow
             pass
 
     def finish_ms2_loading(self, load_number, spectra, error_text):
@@ -281,7 +299,7 @@ class AnnotationGUI:
             self.database_status.config(text=f"Library Database loaded: {path}")
         except Exception as error:
             self.lib = None
-            messagebox.showerror("Error", f"Failed to Load Library Database: \n{e}")
+            messagebox.showerror("Error", f"Failed to Load Library Database: \n{error}")
 
 
 
@@ -365,41 +383,39 @@ class AnnotationGUI:
                     result_row['feature_id_meas'] = int(f_id_meas)
 
                     if "feature_id" in result_row:
-                        result_row['feature_id'] = (result_row.pop('feature_id'))
-
-                    elif "feature_id_lib" in result_row:
-                        result_row['feature_id_lib'] = (result_row.pop('feature_id_lib'))
+                        result_row['feature_id_lib'] = (result_row.pop('feature_id'))
 
                     rows.append(result_row)
 
-                if rows:
-                    self.current_matches_table = pd.DataFrame(rows)
+            if rows:
+                self.current_matches_table = pd.DataFrame(rows)
 
-                    for column in self.columns:
-                        if column not in self.current_matches_table.columns:
-                            self.current_matches_table[column] = pd.NA
+                for column in self.columns:
+                    if column not in self.current_matches_table.columns:
+                        self.current_matches_table[column] = pd.NA
 
-                    for column in ("feature_id_meas", "feature_id_lib", "ms2_score"):
-                        self.current_matches_table[column] = pd.to_numeric(self.current_matches_table[column], errors = "coerce")
+                for column in ("feature_id_meas", "feature_id_lib", "ms2_score"):
+                    self.current_matches_table[column] = pd.to_numeric(self.current_matches_table[column], errors = "coerce")
 
-                    self.current_matches_table = (
-                        self.current_matches_table.sort_values(by=["feature_id_meas", "ms2_score"],
-                        ascending=[True, False], na_position="last").reset_index(drop=True)
-                    )
+                self.current_matches_table = (
+                    self.current_matches_table.sort_values(by=["feature_id_meas", "ms2_score"],
+                    ascending=[True, False], na_position="last").reset_index(drop=True)
+                )
 
-                else:
-                    self.current_matches_table = pd.DataFrame(columns=self.columns)
+            else:
+                self.current_matches_table = pd.DataFrame(columns=self.columns)
 
-                self.apply_filters(show_empty_message=False)
-                count = len(self.current_matches_table)
-                self.database_status.config(text=f"Found {count} matches.")
+            self.apply_filters(show_empty_message=False)
+            count = len(self.current_matches_table)
+            self.database_status.config(text=f"Found {count} matches.")
 
-                if count == 0:
-                    messagebox.showinfo("Search complete", "No matches found.")
+            if count == 0:
+                messagebox.showinfo("Search complete", "No matches found.")
 
 
 
         except Exception as error:
+            traceback.print_exc() #to show the full traceback in the console
             self.current_matches = None
             self.current_matches_table = pd.DataFrame(columns=self.columns)
             self.visible_results = self.current_matches_table.copy()
@@ -412,6 +428,72 @@ class AnnotationGUI:
             self.search_button.config(state="normal")
 
     #Filter Results
+    def filter_active(self):
+        return bool(self.min_id_entry.get().strip() or self.max_id_entry.get().strip() or self.name_filter_entry.get().strip())
+
+    def get_rt(self, fid):
+        try:
+            return float(self.meas.retention_times_in_seconds[fid]) * getattr(self, "rt_scale", 1.0)
+        except (KeyError, ValueError, TypeError, IndexError):
+            print(f"Could not get retention time for feature {fid}")
+            return None
+
+    def detect_rt_scale(self):
+        self.rt_scale = 1.0 #if retention time is in seconds
+        try:
+            stored = self.meas.retention_times_in_seconds
+            values = np.asarray(list(stored.values()) if isinstance(stored, dict) else stored, dtype=float)
+            #xs is used for every x coordinate actually drawn
+            xs = np.concatenate([np.asanyarray(c.get_offsets(), dtype=float)[:, 0]
+                                 for c in self.scatter_ax.collections
+                                 if len(c.get_offsets())]
+            )
+
+            #ratio here is largest stored value divided by largest plotted x value
+            ratio = np.nanmax(values) / np.nanmax(xs)
+            if 40 < ratio < 80: #choosing this ratio range as the plot might be in minutes
+                self.rt_scale = 1/60 #if rt in minutes
+            print(f"RT scale detected: {self.rt_scale} (stored/plotted max ratio: {ratio:.2f})")
+        except Exception as error:
+            print(f"Could not detect RT scale: {error}")
+
+    def update_scatter_marker(self):
+        if self.meas is None or self.scatter_ax is None or self.canvas is None:
+            return
+        if self.selected_feature_marker is not None:
+            try:
+                self.selected_feature_marker.remove()
+            except Exception:
+                pass
+            self.selected_feature_marker = None
+
+        old_label = getattr(self, "selected_feature_label", None)
+        if old_label is not None:
+            try:
+                old_label.remove()
+            except Exception:
+                pass
+            self.selected_feature_label = None
+
+        if self.filter_active() and not self.visible_results.empty:
+            fids = self.visible_results["feature_id_meas"].dropna().astype(int).unique()
+
+            xs, ys = [], [] #xs and ys are list of retention times and m/z values
+            for fid in fids:
+                mz = self.meas.mzs.get(fid)
+                rt = self.get_rt(fid)
+                if mz is not None and rt is not None:
+                    xs.append(rt)
+                    ys.append(mz)
+
+            if xs:
+                self.selected_feature_marker = self.scatter_ax.scatter(
+                    xs, ys, s=120, facecolors='none', edgecolors='black', linewidths = 2, zorder=10
+                )
+
+            self.canvas.draw_idle()
+
+
     def apply_filters(self, show_empty_message=True):
         if self.current_matches_table.empty:
             self.visible_results = self.current_matches_table.copy()
@@ -443,18 +525,22 @@ class AnnotationGUI:
 
         self.visible_results = filtered.reset_index(drop=True)
         self.display_dataframe(self.visible_results)
+
+        self.update_scatter_marker()
+
         if show_empty_message and self.visible_results.empty:
             self.database_status.config(text=f"No matches meet the current filters.")
 
         elif not self.visible_results.empty:
-            self.database_status.config(text=f"Showing {len(self.visible_results)}" f"of {len(self.current_matches_table)} matches.")
+            self.database_status.config(text=f"Showing {len(self.visible_results)} of {len(self.current_matches_table)} matches.")
 
     def clear_filters(self):
         self.min_id_entry.delete(0, tk.END)
         self.max_id_entry.delete(0, tk.END)
         self.name_filter_entry.delete(0, tk.END)
         self.visible_results = (self.current_matches_table.copy()).copy()
-        self.visible_dataframe(self.visible_results)
+        self.display_dataframe(self.visible_results)
+        self.update_scatter_marker()
         self.database_status.config(text=f"Showing all {len(self.current_matches_table)} matches.")
 
     #Sorting
@@ -560,7 +646,7 @@ class AnnotationGUI:
 
         match_result = next(
             (m for m in self.current_matches.get(f_id_meas, [])
-             if int (m.get("feature_id", -1)) == f_id_lib),
+             if int (m.get("feature_id", m.get("feature_id_lib", -1))) == f_id_lib),
             None
         )
 
@@ -580,15 +666,20 @@ class AnnotationGUI:
             mz_tol_da = max_dmz_da
 
         elif max_dmz_ppm is not None:
-            mz_tol_da = max_dmz_ppm / 1e6 * self.meas.mzs[f_id_meas] * 1e3
+            mz_tol_da = max_dmz_ppm / 1e6 * self.meas.mzs[f_id_meas]
 
         else:
             messagebox.showerror("Invalid Tolerance", "Enter either ppm or Da values.")
+            return
 
-        # Remove the previous canvas
+        # Removing the previous canvas
         if self.canvas is not None:
             self.canvas.get_tk_widget().destroy()
             self.canvas = None
+
+        #the scatter plot gets replaced by the match plot, so its axes would be no longer valid
+        self.scatter_ax = None
+        self.selected_feature_marker = None
 
         try:
             fig = plt.figure(figsize=(15, 15))
@@ -608,6 +699,7 @@ class AnnotationGUI:
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
         except Exception as error:
+            traceback.print_exc()
             plt.close("all")
             messagebox.showerror("Plot Error", f"Could not plot the selected match. {error}")
 
@@ -622,7 +714,7 @@ class AnnotationGUI:
             return
 
         values = self.tree.item(selection[0], "values")
-        f_id_mas, f_id_lib = int(values[0]), int(values[1])
+        f_id_meas, f_id_lib = int(values[0]), int(values[1])
 
         confirm = messagebox.askyesno("Confirm", f"Assign {f_id_lib} to Feature {f_id_meas}?")
 
@@ -644,38 +736,55 @@ class AnnotationGUI:
             for widget in self.plot_frame.winfo_children():
                 widget.destroy()
 
-            fig, ax = plt.subplots(figsize=(7,6))
+            self.selected_feature_marker = None #the older markes belonged to the previous scatter plot which gets replaced by this one
+            self.scatter_fig = Figure(figsize=(7, 6))
+            self.scatter_ax = self.scatter_fig.add_subplot(111)
 
-            #Show annotations
             show_annotation = getattr(self, "show_annotation", True)
-
             highlight_fids = getattr(self, "highlight_fids", None)
 
-            #Calling FeatureManagerDB plot_scatter method
-            self.meas.plot_scatter(add_annotations=show_annotation, highlight_features=highlight_fids, ax=ax)
+            self.meas.plot_scatter(add_annotations = show_annotation,
+                                   highlight_features = highlight_fids,
+                                   ax=self.scatter_ax
+            )
 
             #Connecting click point for synchorization
-            fig.canvas.mpl_connect('button_press_event', self.on_scatter_click)
-            self.canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
-            plt.close(fig)
+            self.canvas = FigureCanvasTkAgg(self.scatter_fig, master=self.plot_frame)
             self.canvas.draw()
             self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            self.scatter_fig.canvas.mpl_connect('button_press_event', self.on_scatter_click)
+
+            self.database_status.config(text="Scatter plot rendered. Click any point to sync with table.")
+            self.detect_rt_scale()
+
+            rt_unit = "min" if getattr(self, "rt_scale", 1.0) < 1 else "s"
+            self.scatter_ax.set_xlabel(f"Retention Time ({rt_unit})")
+            self.scatter_ax.set_ylabel(f"m/z")
+            self.scatter_ax.set_title("Retention Time vs m/z")
+
+            try:
+                self.scatter_fig.tight_layout()
+            except Exception:
+                pass
+
+            self.canvas.draw_idle()
+            self.update_scatter_marker()
             self.database_status.config(text="Scatter plot rendered. Click any point to sync with table.")
 
+
         except Exception as error:
+            traceback.print_exc()
             plt.close("all")
+            self.scatter_ax = None
             messagebox.showerror("Error", f"Could not render the scatter plot. {error}")
 
     def toggle_manual_annotations(self):
-        if not hasattr(self, "manual_annotations"):
-            self.show_annotation = True
+        self.show_annotation = not getattr(self, "show_annotation", True)
+        self.refresh_scatter_plot()
 
-        self.show_annotation = not self.show_annotation
         status = "enabled" if self.show_annotation else "disabled"
         self.database_status.config(text=f"Manually annotated {status} on scatter plot.")
-
-        if self.meas is not None:
-            self.plot_scatter_view()
 
     def apply_neutral_loss_filter(self):
         if self.meas is None:
@@ -699,7 +808,62 @@ class AnnotationGUI:
             self.plot_scatter_view()
 
         except Exception as error:
+            traceback.print_exc()
             messagebox.showerror("Error", f"Could not apply neutral loss filter. {error}")
+
+    def highlighted_selected_feature(self, f_id_meas):
+        if self.meas is None or self.scatter_ax is None or self.canvas is None:
+            return
+
+        try:
+            mz = self.meas.mzs.get(f_id_meas)
+            if mz is None:
+                print(f"No m/z for feature {f_id_meas}")
+                return
+
+            rt = self.get_rt(f_id_meas)
+
+            if rt is None:
+                print(f"Could not find retention time for feature {f_id_meas}")
+                return
+
+            #Removing previous marker
+            if hasattr(self, "selected_feature_marker") and self.selected_feature_marker:
+                try:
+                    self.selected_feature_marker.remove()
+                except Exception:
+                    pass
+
+            #Drawing a red circle around the the selected fature
+            self.selected_feature_marker = self.scatter_ax.scatter(
+                [rt],
+                [mz],
+                s = 300,
+                facecolors="none",
+                edgecolors="red",
+                linewidths=2,
+                zorder=10,
+            )
+
+            old_label = getattr(self, "selected_feature_label", None)
+            if old_label is not None:
+                try:
+                    old_label.remove()
+                except Exception:
+                    pass
+
+            #Got the syntax for this line of code from AI
+            self.selected_feature_label = self.scatter_ax.annotate(
+                f"ID {f_id_meas}\nRT {rt:.2f}, m/z {mz:.4f}",
+                xy = (rt, mz), xytext = (12,12), textcoords = "offset points", fontsize = 8, zorder=11,
+                bbox = dict(boxstyle = "round", fc = "white", ec = "red", alpha = 0.9)
+            )
+            print(f"Marker drawn for feature {f_id_meas} at RT={rt:.3f}, m/z={mz:.4f}")
+
+            self.canvas.draw_idle()
+
+        except Exception as error:
+            print(f"Could not highlight feature {f_id_meas}. {error}")
 
     def on_scatter_click(self, event):
         if event.xdata is None or event.ydata is None:
@@ -717,13 +881,7 @@ class AnnotationGUI:
             target_fids = self.highlight_fids if self.highlight_fids else self.meas.feature_ids
             for fid in target_fids:
                 #Rtreiving retention time and m/z values for the feature
-                rt = getattr(self.meas, "retention_time", {}).get(fid, None)
-                if rt is None:
-                    try:
-                        rt = self.meas.get_retention_time(fid)
-                    except Exception:
-                        rt = 0.0
-
+                rt = self.get_rt(fid)
                 mz = self.meas.mzs.get(fid, None)
 
                 if rt is not None and mz is not None:
@@ -744,6 +902,45 @@ class AnnotationGUI:
 
         except Exception as error:
             print(f"Error handling scatter_plot synchornization: {error}")
+
+    def on_result_selected(self, event=None):
+        #Updating the scatter plot when a new result is selected from the result table column
+        result_selected = self.tree.selection()
+        if not result_selected:
+            return
+
+        values = self.tree.item(result_selected[0], "values")
+        try:
+            f_id_meas = int(values[0])
+        except (ValueError, IndexError, TypeError):
+            return
+
+        print("Selected measured feature:", f_id_meas)
+
+        if self.scatter_ax is not None:
+            self.highlighted_selected_feature(f_id_meas)
+        else:
+            print("Scatter plot has not been rendered yet.")
+
+    def refresh_scatter_plot(self):
+        if self.meas is None:
+            messagebox.showerror("Error", "Please load a measured database first")
+            return
+
+        selected = self.tree.selection()
+        selected_fid = None
+
+        if selected:
+            try:
+                selected_fid = int(self.tree.item(selected[0], "values")[0])
+            except (ValueError, IndexError, TypeError):
+                pass
+
+        self.plot_scatter_view()
+
+        #Restoring the selected feature in the table
+        if selected_fid is not None:
+            self.highlighted_selected_feature(selected_fid)
 
 
 if __name__ == "__main__":

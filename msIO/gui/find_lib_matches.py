@@ -33,6 +33,16 @@ class AnnotationGUI:
         self.canvas: FigureCanvasTkAgg = None
         self.toolbar: NavigationToolbar2Tk = None
 
+        # scatter plot (RT vs m/z) of the measurement
+        self.scatter_canvas: FigureCanvasTkAgg = None
+        self.scatter_toolbar: NavigationToolbar2Tk = None
+        self.scatter_ax = None
+        self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(value=True)
+        self.highlight_fids: list[int] = None  # features highlighted by the neutral loss filter
+        self.filtered_features_marker = None  # black circles around features in the filtered table
+        self.selected_feature_marker = None  # red circle around the feature selected in the table
+        self.selected_feature_label = None
+
         self.measurement_load_number: int = 0
 
         # colors that will be used in the matching table
@@ -97,6 +107,7 @@ class AnnotationGUI:
             show="headings",
             selectmode="browse"
         )
+        self.tk_tree_view.bind("<<TreeviewSelect>>", self.on_select_match_result)
 
         # Setting table column headers
         self.tk_tree_view.heading("feature_id_meas", text="Measurement feature ID")
@@ -220,13 +231,36 @@ class AnnotationGUI:
         ttk.Button(tk_button_frame, text="Annotate Feature", command=self.add_annotation_to_meas).pack(side="right",
                                                                                                        padx=5)
 
-        # Plot Area
-        self.tk_plot_frame = tk.LabelFrame(self.tk_root, text="Match Overview")
-        self.tk_plot_frame.pack(fill="both", expand=True, padx=10, pady=8)
+        # Plot Area: match overview and scatter plot side by side
+        tk_plot_area = ttk.PanedWindow(self.tk_root, orient="horizontal")
+        tk_plot_area.pack(fill="both", expand=True, padx=10, pady=8)
+
+        self.tk_plot_frame = tk.LabelFrame(tk_plot_area, text="Match Overview")
+        tk_plot_area.add(self.tk_plot_frame, weight=1)
+
+        self._create_scatter_plot_panel(tk_plot_area)
 
         # Database status
         self.tk_status_field = ttk.Label(self.tk_root, text="Please Load Both Databases to begin.")
         self.tk_status_field.pack(anchor="sw", padx=15, pady=3)
+
+    def _create_scatter_plot_panel(self, parent):
+        tk_scatter_panel = tk.LabelFrame(parent, text="Scatter Plot (RT vs m/z)")
+        parent.add(tk_scatter_panel, weight=1)
+
+        tk_scatter_buttons = ttk.Frame(tk_scatter_panel, padding=5)
+        tk_scatter_buttons.pack(fill="x")
+
+        ttk.Button(tk_scatter_buttons, text="Scatter Plot", command=self.plot_scatter).pack(side="left", padx=3)
+        ttk.Checkbutton(tk_scatter_buttons, text="Show annotations", variable=self.tk_show_annotations,
+                        command=self.refresh_scatter_plot).pack(side="left", padx=3)
+        ttk.Button(tk_scatter_buttons, text="Highlight NH3 loss",
+                   command=self.on_click_neutral_loss_filter).pack(side="left", padx=3)
+        ttk.Button(tk_scatter_buttons, text="Remove highlight",
+                   command=self.on_click_remove_highlight).pack(side="left", padx=3)
+
+        self.tk_scatter_plot_frame = ttk.Frame(tk_scatter_panel)
+        self.tk_scatter_plot_frame.pack(fill="both", expand=True)
 
     def clear_tree_view_match_results(self):
         for item in self.tk_tree_view.get_children():
@@ -249,6 +283,10 @@ class AnnotationGUI:
             self.current_matches_table = pd.DataFrame(columns=self.tree_columns)
             self.filtered_results = self.current_matches_table.copy()
             self.clear_tree_view_match_results()
+
+            # scatter plot belongs to the previous database
+            self.highlight_fids = None
+            self._destroy_scatter_plot()
 
             self.tk_status_field.config(text=f"Measured Database loaded: {path}")
 
@@ -425,7 +463,8 @@ class AnnotationGUI:
 
         if name_substrings := self.tk_filter_name.get().strip():
             for substring in name_substrings.split(';'):
-                mask &= filtered_matches.loc[:, "name"].astype(str).str.contains(substring.strip(), case=False, na=False, regex=False)
+                mask &= filtered_matches.loc[:, "name"].astype(str).str.contains(substring.strip(), case=False,
+                                                                                 na=False, regex=False)
 
         if min_rt := self.tk_filter_min_rt.get().strip():
             try:
@@ -475,14 +514,16 @@ class AnnotationGUI:
         if min_mz := self.tk_filter_min_mz.get().strip():
             try:
                 min_mz = float(min_mz)
-                mask &= filtered_matches.feature_id_meas.apply(lambda f_id: self.connected_measurement_db.mzs[f_id]) >= min_mz
+                mask &= filtered_matches.feature_id_meas.apply(
+                    lambda f_id: self.connected_measurement_db.mzs[f_id]) >= min_mz
             except ValueError:
                 messagebox.showerror('Value Error', 'Minimum m/z must be a number.')
 
         if max_mz := self.tk_filter_max_mz.get().strip():
             try:
                 max_mz = float(max_mz)
-                mask &= filtered_matches.feature_id_meas.apply(lambda f_id: self.connected_measurement_db.mzs[f_id]) <= max_mz
+                mask &= filtered_matches.feature_id_meas.apply(
+                    lambda f_id: self.connected_measurement_db.mzs[f_id]) <= max_mz
             except ValueError:
                 messagebox.showerror('Value Error', 'Maximum m/z must be a number.')
 
