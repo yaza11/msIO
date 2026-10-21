@@ -7,13 +7,16 @@ Workflow:
        spectra of the measurement are loaded in the background.
     2. Set the matching parameters and click "Find Matches".
     3. Narrow down the results table with the filters (applied while typing) or by
-       clicking a feature in the scatter plot. Features with specific MS2 fragments or
-       neutral losses can be highlighted in the scatter plot.
+       clicking a feature in the scatter plot. In the scatter plot, features with specific
+       MS2 fragments or neutral losses can be highlighted and pairs of features with
+       specific mass differences (e.g. adduct exchanges) can be connected.
     4. Select a row to plot the match overview. Shift-click two features in the scatter
        plot to compare their MS2 spectra instead.
-    5. "Add annotation" collects library matches in a local list. "Manage annotations"
-       opens a window to review new and existing manual annotations and to write the
-       changes to the measured database.
+    5. Collect annotations in a local list: library matches ("Add library match"),
+       compounds entered by hand or built with the LipidCalculator IPL builder ("Add manual
+       annotation") and in-source fragments of other features ("Mark in-source fragment").
+       "Manage annotations" opens a window to review new and existing annotations and to
+       write the changes to the measured database.
 
 Slow work (loading MS2 spectra, building the match overview figure) runs in worker
 threads. Worker threads never touch tk widgets; they hand their results back to the
@@ -25,22 +28,36 @@ import pandas as pd
 import threading
 import tkinter as tk
 from tkinter import messagebox, filedialog, ttk
+from typing import Callable
 
-from LipidCalculator import CompoundDict
+from LipidCalculator import Adduct, CompoundDict
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 
 from msIO.feature_managers.db import Library, FeatureManagerDB, lib_match_result_to_table
 from msIO.metrics import cosine_similarity_sym
 
+try:
+    from LipidCalculator.gui.common import ADDUCTS
+except ImportError:  # LipidCalculator without GUI
+    ADDUCTS: list[str] = ['[M+H]+', '[M+NH4]+', '[M+Na]+', '[M+K]+', '[M-H]-', '[M+Cl]-', '[M+HCOO]-']
+
 SQLITE_FILE_TYPES: list[tuple[str, str]] = [("SQLite Files", "*.sqlite"), ("All files", "*.*")]
 
-# (measured feature id, library feature id) identifies a manual annotation
-AnnotationKey = tuple[int, int]
+# (kind, measured feature id, reference) identifies a manual annotation, kind is one of the
+# ManualAnnotationKind of FeatureManagerDB, the reference is the library feature id ("library"),
+# the parent feature id ("in_source_fragment") or "name|adduct" ("manual")
+AnnotationKey = tuple[str, int, str]
+ANNOTATION_KIND_LABELS: dict[str, str] = {
+    "library": "library match", "manual": "manual", "in_source_fragment": "in-source fragment"
+}
 
 # colors of the two features compared by shift-click, used in the scatter plot and the MS2 comparison
 COMPARISON_COLORS: tuple[str, str] = ("C2", "C1")
+# colors of the lines connecting features with marked mass differences (one per entry)
+MASS_DIFFERENCE_COLORS: list[str] = ["C3", "C4", "C5", "C6", "C8", "C9"]
 
 
 def parse_masses(text: str) -> list[tuple[str, float]]:
@@ -68,6 +85,64 @@ def parse_masses(text: str) -> list[tuple[str, float]]:
             raise ValueError(f'"{entry}" does not have a positive mass.')
         masses.append((entry, mass))
     return masses
+
+
+def parse_mass_differences(text: str) -> list[tuple[str, Callable[[np.ndarray], np.ndarray]]]:
+    """
+    Parse ";"-separated mass differences into (entry, function) pairs. The function maps m/z values
+    of features to the m/z values of their expected partners.
+
+    An entry is a mass difference (number or formula, see parse_masses) or an adduct exchange like
+    "[M+H]+>[M+NH4]+" (the partner of an [M+H]+ ion is the [M+NH4]+ ion of the same molecule, this
+    also works for different charge states).
+
+    Raises:
+        ValueError: if an entry can't be parsed.
+    """
+    differences: list[tuple[str, Callable[[np.ndarray], np.ndarray]]] = []
+    for entry in text.split(';'):
+        if not (entry := entry.strip()):
+            continue
+        if '>' in entry:
+            try:
+                adduct_from, adduct_to = (Adduct(adduct.strip()) for adduct in entry.split('>'))
+            except Exception:
+                raise ValueError(f'"{entry}" is not a valid adduct exchange, use e.g. [M+H]+>[M+NH4]+.')
+            differences.append((entry, lambda mzs, a=adduct_from, b=adduct_to: np.array(
+                [b.mass_to_mz(a.mz_to_mass(mz)) for mz in mzs]
+            )))
+        else:
+            ((_, mass),) = parse_masses(entry)
+            differences.append((entry, lambda mzs, d=mass: mzs + d))
+    return differences
+
+
+def find_feature_pairs(
+        f_ids: np.ndarray,
+        rts: np.ndarray,
+        mzs: np.ndarray,
+        expected_partner_mz: Callable[[np.ndarray], np.ndarray],
+        max_dmz_ppm: float,
+        max_dmz_da: float,
+        rt_window: float
+) -> list[tuple[int, int]]:
+    """
+    Pairs (feature, partner) whose partner has the expected m/z (stricter of both tolerances) and a
+    retention time within rt_window of the feature.
+    """
+    expected: np.ndarray = expected_partner_mz(mzs)
+    tolerances: np.ndarray = np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * expected)
+    order: np.ndarray = np.argsort(mzs)
+    mzs_sorted: np.ndarray = mzs[order]
+    idcs_left = np.searchsorted(mzs_sorted, expected - tolerances, side='left')
+    idcs_right = np.searchsorted(mzs_sorted, expected + tolerances, side='right')
+
+    pairs: list[tuple[int, int]] = []
+    for i, (left, right) in enumerate(zip(idcs_left, idcs_right)):
+        for j in order[left:right]:
+            if j != i and abs(rts[j] - rts[i]) <= rt_window:
+                pairs.append((int(f_ids[i]), int(f_ids[j])))
+    return pairs
 
 
 class AnnotationGUI:
@@ -139,11 +214,16 @@ class AnnotationGUI:
         self.scatter_toolbar: NavigationToolbar2Tk = None
         self.scatter_ax = None
         self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(value=True)
+        self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(value=0.2)
         self.highlighted_f_ids: list[int] = None  # features with the requested fragments / losses
         self.compared_f_ids: list[int] = []  # up to two features selected by shift-click
+        self.last_clicked_f_id: int = None
+        # pairs of features with a marked mass difference: (entry, [(feature, partner), ...]) per entry
+        self.mass_difference_pairs: list[tuple[str, list[tuple[int, int]]]] = []
         self.filtered_features_marker = None  # black circles around features in the filtered table
         self.selected_feature_marker = None  # red circle around the feature selected in the table
         self.compared_features_markers: list = []  # squares around the compared features
+        self.mass_difference_lines: list = []  # lines and their end caps
 
         # background colors of table rows, alternating between measured features
         self.table_row_colors: list[str] = ["#E5FFCC", "#FFCCCC", "#CCFFCC", "#CCFFFF", "#CCCCFF", "#FFE5CC"]
@@ -333,9 +413,14 @@ class AnnotationGUI:
             tk_button_frame, text="Manage annotations", command=self.on_click_manage_annotations
         )
         self.tk_manage_annotations_button.pack(side="right")
-        ttk.Button(tk_button_frame, text="Add annotation", command=self.on_click_add_annotation).pack(
+        ttk.Button(tk_button_frame, text="Add library match", command=self.on_click_add_annotation).pack(
             side="right", padx=5
         )
+        ttk.Button(tk_button_frame, text="Add manual annotation", command=self.on_click_add_manual_annotation).pack(
+            side="right"
+        )
+        ttk.Button(tk_button_frame, text="Mark in-source fragment",
+                   command=self.on_click_mark_in_source_fragment).pack(side="right", padx=5)
 
     def _create_match_plot_panel(self, parent):
         self.tk_match_plot_frame = ttk.LabelFrame(parent, text="Match overview (select a row in the table)")
@@ -369,6 +454,21 @@ class AnnotationGUI:
         ttk.Button(tk_controls, text="Remove highlight", command=self.on_click_remove_highlight).grid(row=1, column=7)
         for tk_entry in (self.tk_fragments_entry, self.tk_losses_entry):
             tk_entry.bind("<Return>", lambda event: self.on_click_highlight())
+
+        # connect pairs of features with mass differences or adduct exchanges, matched with the precursor tolerance
+        ttk.Label(tk_controls, text="Mass differences").grid(row=2, column=0, sticky="w", pady=2)
+        self.tk_mass_differences_entry = ttk.Entry(tk_controls)
+        self.tk_mass_differences_entry.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(4, 10))
+        self.tk_mass_differences_entry.bind("<Return>", lambda event: self.on_click_mark_mass_differences())
+        ttk.Label(tk_controls, text="RT window (min)").grid(row=2, column=4, sticky="w")
+        ttk.Entry(tk_controls, textvariable=self.tk_rt_window, width=5).grid(row=2, column=5, sticky="w", padx=(4, 10))
+        ttk.Button(tk_controls, text="Mark", command=self.on_click_mark_mass_differences).grid(row=2, column=6,
+                                                                                               padx=3)
+        ttk.Button(tk_controls, text="Remove marks", command=self.on_click_remove_mass_differences).grid(row=2,
+                                                                                                         column=7)
+        ttk.Label(tk_controls, foreground="gray",
+                  text="e.g. NH3; H2O; [M+H]+>[M+NH4]+ (adduct exchange); fragments are ions, e.g. C5H15NO4P+").grid(
+            row=3, column=0, columnspan=8, sticky="w")
 
         self.tk_scatter_plot_frame = ttk.Frame(tk_scatter_panel)
         self.tk_scatter_plot_frame.pack(fill="both", expand=True)
@@ -411,6 +511,8 @@ class AnnotationGUI:
 
         self.highlighted_f_ids = None
         self.compared_f_ids = []
+        self.last_clicked_f_id = None
+        self.mass_difference_pairs = []
         self.draw_scatter_plot()
 
         self.tk_status_field.config(text=f"Measured database loaded, loading MS2 spectra ...: {path}")
@@ -654,6 +756,10 @@ class AnnotationGUI:
     def _clear_matches_table(self):
         self.tk_matches_table.delete(*self.tk_matches_table.get_children())
 
+    @staticmethod
+    def _library_annotation_key(f_id_meas: int, f_id_lib: int) -> AnnotationKey:
+        return "library", int(f_id_meas), str(int(f_id_lib))
+
     def _show_matches_in_table(self, table: pd.DataFrame):
         """Replace the rows of the results table, rows of the same measured feature share a background color."""
         self._clear_matches_table()
@@ -668,7 +774,7 @@ class AnnotationGUI:
         for _, row in table.iterrows():
             values: list = ["" if pd.isna(value := row.get(column, "")) else value for column in self.table_columns]
             values[self.table_columns.index("annotation")] = self._get_annotation_state(
-                (int(row.feature_id_meas), int(row.feature_id_lib))
+                self._library_annotation_key(row.feature_id_meas, row.feature_id_lib)
             )
             self.tk_matches_table.insert("", 'end', values=values, tags=(f"feature_{row.feature_id_meas}",))
 
@@ -694,19 +800,28 @@ class AnnotationGUI:
     # Manual annotations
     # ------------------------------------------------------------------------------------------------------------------
     def _load_saved_annotations(self):
-        """Read the manual annotations stored in the measured database."""
+        """Read the manual annotations (all kinds) stored in the measured database."""
         self.saved_annotations = {}
         for candidate in self.meas_db.get_manual_annotations():
-            # the library feature id is only stored in the folder name, see FeatureManagerDB.add_annotations_from_library
-            f_id_lib = int(candidate.sirius_compound_folder.split('for feature ')[1].strip('"'))
-            self.saved_annotations[(candidate.feature_id, f_id_lib)] = dict(
+            kind: str = FeatureManagerDB.get_manual_annotation_kind(candidate)
+            reference: int | None = FeatureManagerDB.get_referenced_feature_id(candidate)
+            ref: str = f"{candidate.name_sirius}|{candidate.adduct_sirius}" if kind == "manual" else str(reference)
+            key: AnnotationKey = (kind, candidate.feature_id, ref)
+            if key in self.saved_annotations:  # stored more than once
+                self.saved_annotations[key]["candidate_ids"].append(candidate.id)
+                continue
+            self.saved_annotations[key] = dict(
+                kind=kind,
                 name=candidate.name_sirius,
+                formula=candidate.formula_sirius,
                 adduct=candidate.adduct_sirius,
                 ms2_score=candidate.confidence_score,
+                reference=reference,
+                candidate_ids=[candidate.id],
             )
 
     def _get_annotation_state(self, key: AnnotationKey) -> str:
-        """State of the manual annotation of a match: "in database", "to remove", "to add" or "" (none)."""
+        """State of a manual annotation: "in database", "to remove", "to add" or "" (none)."""
         if key in self.saved_annotations:
             return "to remove" if key in self.discarded_annotations else "in database"
         if key in self.pending_annotations and key not in self.discarded_annotations:
@@ -729,31 +844,68 @@ class AnnotationGUI:
             f"database. Discard these changes?"
         )
 
+    def add_pending_annotation(self, key: AnnotationKey, info: dict) -> bool:
+        """
+        Add an annotation to the local list (not yet written to the database).
+
+        Returns False if the annotation is already in the database (it is kept, if it was marked for removal).
+        """
+        self.discarded_annotations.discard(key)
+        if key in self.saved_annotations:
+            self._on_annotations_changed()
+            return False
+        self.pending_annotations[key] = info
+        self._on_annotations_changed()
+        return True
+
+    def _get_current_feature(self) -> int | None:
+        """Feature to prefill annotation dialogs: selected in the table, else last clicked in the scatter plot."""
+        if (match := self._get_selected_match()) is not None:
+            return int(match.feature_id_meas)
+        if self.last_clicked_f_id is not None:
+            return self.last_clicked_f_id
+        return self.compared_f_ids[-1] if self.compared_f_ids else None
+
     def on_click_add_annotation(self):
-        """Add the selected library match to the local list of annotations (not yet written to the database)."""
+        """Add the selected library match to the local list of annotations."""
         if (match := self._get_selected_match()) is None:
             messagebox.showerror("Error", "Please select a match row first.")
             return
-        key: AnnotationKey = (int(match.feature_id_meas), int(match.feature_id_lib))
-
-        if key in self.saved_annotations:
-            # adding an annotation marked for removal again means keeping it
-            self.discarded_annotations.discard(key)
-            self.tk_status_field.config(text=f"Library feature {key[1]} is already annotated for feature {key[0]}.")
-        else:
-            match_result: dict = next(m for m in self.matches[key[0]] if m['feature_id'] == key[1])
-            self.pending_annotations[key] = dict(
-                name=match_result.get('name'),
-                adduct=match_result.get('adduct'),
-                ms2_score=match_result.get('ms2_score'),
-                library=self.lib_db,
-            )
-            self.discarded_annotations.discard(key)
+        f_id_meas, f_id_lib = int(match.feature_id_meas), int(match.feature_id_lib)
+        match_result: dict = next(m for m in self.matches[f_id_meas] if m['feature_id'] == f_id_lib)
+        added: bool = self.add_pending_annotation(self._library_annotation_key(f_id_meas, f_id_lib), dict(
+            kind="library",
+            name=match_result.get('name'),
+            formula=match_result.get('formula'),
+            adduct=match_result.get('adduct'),
+            ms2_score=match_result.get('ms2_score'),
+            reference=f_id_lib,
+            library=self.lib_db,
+        ))
+        if added:
             self.tk_status_field.config(
-                text=f"Added library feature {key[1]} for feature {key[0]} to the annotations. "
+                text=f"Added library feature {f_id_lib} for feature {f_id_meas} to the annotations. "
                      f"Use \"Manage annotations\" to write them to the database."
             )
-        self._on_annotations_changed()
+        else:
+            self.tk_status_field.config(text=f"Library feature {f_id_lib} is already annotated for feature {f_id_meas}.")
+
+    def on_click_add_manual_annotation(self):
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
+        ManualAnnotationDialog(self, self._get_current_feature())
+
+    def on_click_mark_in_source_fragment(self):
+        """Open the in-source fragment dialog, prefilled with the compared features (lower m/z = fragment)."""
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
+        if len(self.compared_f_ids) == 2:
+            f_id_fragment, f_id_parent = sorted(self.compared_f_ids, key=lambda f_id: self.meas_db.mzs[f_id])
+        else:
+            f_id_fragment, f_id_parent = self._get_current_feature(), None
+        InSourceFragmentDialog(self, f_id_fragment, f_id_parent)
 
     def toggle_annotations(self, keys: list[AnnotationKey], keep: bool = None):
         """Mark annotations to keep or discard (keep=None toggles each of them)."""
@@ -764,6 +916,23 @@ class AnnotationGUI:
             else:
                 self.discarded_annotations.discard(key)
         self._on_annotations_changed()
+
+    def _write_annotation(self, key: AnnotationKey):
+        """Add a pending annotation to the measured database."""
+        kind, f_id_meas, _ = key
+        info: dict = self.pending_annotations[key]
+        if kind == "library":
+            self.meas_db.add_annotations_from_library(
+                library=info['library'], f_id_meas=f_id_meas, f_id_lib=info['reference'], ms2_score=info['ms2_score']
+            )
+        elif kind == "manual":
+            self.meas_db.add_manual_annotation(
+                f_id_meas, name=info['name'], formula=info['formula'], adduct=info['adduct'], smiles=info['smiles']
+            )
+        elif kind == "in_source_fragment":
+            self.meas_db.add_in_source_fragment_annotation(f_id_meas, info['reference'], note=info['note'])
+        else:
+            raise ValueError(f'unknown annotation kind {kind}')
 
     def write_annotations_to_db(self, parent: tk.Misc = None):
         """Add the new and remove the discarded annotations in the measured database (after confirmation)."""
@@ -782,23 +951,17 @@ class AnnotationGUI:
         failed_additions: set[AnnotationKey] = set()
         n_removed: int = 0
         for key in to_add:
-            annotation: dict = self.pending_annotations[key]
             try:
-                self.meas_db.add_annotations_from_library(
-                    library=annotation['library'],
-                    f_id_meas=key[0],
-                    f_id_lib=key[1],
-                    ms2_score=annotation['ms2_score'],
-                )
+                self._write_annotation(key)
             except Exception as error:
                 failed_additions.add(key)
-                errors.append(f"adding {key[1]} to {key[0]}: {error}")
+                errors.append(f"adding {ANNOTATION_KIND_LABELS[key[0]]} to feature {key[1]}: {error}")
         for key in to_remove:
             try:
-                self.meas_db.remove_annotation(*key)
+                self.meas_db.remove_annotations_by_id(self.saved_annotations[key]['candidate_ids'])
                 n_removed += 1
             except Exception as error:
-                errors.append(f"removing {key[1]} from {key[0]}: {error}")
+                errors.append(f"removing {ANNOTATION_KIND_LABELS[key[0]]} from feature {key[1]}: {error}")
 
         # failed additions stay in the local list, everything else is now reflected by the database
         self.pending_annotations = {
@@ -819,9 +982,9 @@ class AnnotationGUI:
     def _on_annotations_changed(self):
         """Update everything that shows annotation states: table column, button text and the manager window."""
         for item, row in zip(self.tk_matches_table.get_children(), self.filtered_matches_table.itertuples()):
-            self.tk_matches_table.set(
-                item, "annotation", self._get_annotation_state((int(row.feature_id_meas), int(row.feature_id_lib)))
-            )
+            self.tk_matches_table.set(item, "annotation", self._get_annotation_state(
+                self._library_annotation_key(row.feature_id_meas, row.feature_id_lib)
+            ))
         n_changes: int = sum(len(keys) for keys in self.get_unsaved_annotation_changes())
         self.tk_manage_annotations_button.config(
             text=f"Manage annotations ({n_changes} unsaved)" if n_changes else "Manage annotations"
@@ -1007,6 +1170,7 @@ class AnnotationGUI:
         self.filtered_features_marker = None
         self.selected_feature_marker = None
         self.compared_features_markers = []
+        self.mass_difference_lines = []
 
     def draw_scatter_plot(self):
         """(Re)draw the scatter plot of the measurement including annotations, highlights and markers."""
@@ -1039,6 +1203,7 @@ class AnnotationGUI:
         if (match := self._get_selected_match()) is not None:
             self.mark_selected_feature(int(match.feature_id_meas))
         self.mark_compared_features()
+        self.mark_mass_differences()
         self.scatter_canvas.draw()
 
     def redraw_scatter_plot(self):
@@ -1098,6 +1263,74 @@ class AnnotationGUI:
     def on_click_remove_highlight(self):
         self.highlighted_f_ids = None
         self.redraw_scatter_plot()
+
+    def on_click_mark_mass_differences(self):
+        """
+        Connect pairs of features whose m/z differ by the entered mass differences or adduct exchanges.
+
+        m/z values are matched with the precursor tolerance (stricter of ppm and mDa), the retention times of
+        both features have to be within the RT window. Empty field removes the marks.
+        """
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
+        try:
+            differences = parse_mass_differences(self.tk_mass_differences_entry.get())
+            max_dmz_ppm: float = self.tk_max_dmz_ppm.get()
+            max_dmz_da: float = self.tk_max_dmz_mda.get() * 1e-3
+            rt_window: float = self.tk_rt_window.get()
+        except ValueError as error:
+            messagebox.showerror("Invalid input", str(error))
+            return
+        except tk.TclError:
+            messagebox.showerror("Invalid input", "Check the precursor tolerances and the RT window.")
+            return
+        if not differences:
+            self.on_click_remove_mass_differences()
+            return
+
+        points = {f_id: p for f_id in self.meas_db.feature_ids if (p := self._get_rt_mz(f_id)) is not None}
+        f_ids = np.array(list(points.keys()))
+        rts, mzs = np.array(list(points.values())).T
+        self.mass_difference_pairs = [
+            (entry, find_feature_pairs(f_ids, rts, mzs, expected_partner_mz, max_dmz_ppm, max_dmz_da, rt_window))
+            for entry, expected_partner_mz in differences
+        ]
+        self.mark_mass_differences()
+
+        counts = ", ".join(f"{entry}: {len(pairs)}" for entry, pairs in self.mass_difference_pairs)
+        self.tk_status_field.config(text=f"Pairs of features within {rt_window:g} min: {counts}.")
+
+    def on_click_remove_mass_differences(self):
+        self.mass_difference_pairs = []
+        self.mark_mass_differences()
+
+    def find_marked_mass_differences(self, f_id_a: int, f_id_b: int) -> list[str]:
+        """Marked mass differences that connect two features (in either direction)."""
+        return [entry for entry, pairs in self.mass_difference_pairs
+                if (f_id_a, f_id_b) in pairs or (f_id_b, f_id_a) in pairs]
+
+    def mark_mass_differences(self):
+        """Draw a line between the features of each pair with a marked mass difference."""
+        if self.scatter_ax is None:
+            return
+        for artist in self.mass_difference_lines:
+            artist.remove()
+        self.mass_difference_lines = []
+
+        for i, (entry, pairs) in enumerate(self.mass_difference_pairs):
+            color: str = MASS_DIFFERENCE_COLORS[i % len(MASS_DIFFERENCE_COLORS)]
+            segments = [(self._get_rt_mz(f_id_a), self._get_rt_mz(f_id_b)) for f_id_a, f_id_b in pairs]
+            lines = LineCollection(segments, colors=color, linewidths=2.5, zorder=12, label=f"{entry} ({len(pairs)})")
+            self.scatter_ax.add_collection(lines)
+            self.mass_difference_lines.append(lines)
+            # mass differences are small compared to the m/z range, the end caps keep short lines visible
+            if segments:
+                ends = np.array([point for segment in segments for point in segment])
+                self.mass_difference_lines.append(self.scatter_ax.scatter(
+                    ends[:, 0], ends[:, 1], marker="_", s=120, linewidths=2.5, color=color, zorder=12
+                ))
+        self._update_scatter_legend()
 
     def mark_filtered_features(self):
         """Circle features of the filtered table in black (only if a filter removes rows)."""
@@ -1185,6 +1418,7 @@ class AnnotationGUI:
         if (closest_f_id := self._find_closest_feature(event.xdata, event.ydata)) is None:
             return
         rt, mz = self._get_rt_mz(closest_f_id)
+        self.last_clicked_f_id = closest_f_id
 
         # modifiers come from the state of this click; event.key is the last key seen by the canvas and can get
         # stuck at "shift" when the key is released while another widget has the focus
@@ -1222,35 +1456,39 @@ class AnnotationManagerWindow(tk.Toplevel):
     """
     Window to review manual annotations before writing them to the measured database.
 
-    Lists new annotations (added with "Add annotation") and the ones already in the database.
-    Each can be kept or discarded; "Write to database" adds the kept new ones and removes the
-    discarded ones from the database. The state lives in the AnnotationGUI, so closing this
-    window doesn't lose any changes.
+    Lists new annotations (library matches, manual annotations, in-source fragments) and the ones
+    already in the database. Each can be kept or discarded; "Write to database" adds the kept new
+    ones and removes the discarded ones from the database. The state lives in the AnnotationGUI,
+    so closing this window doesn't lose any changes.
     """
 
     def __init__(self, gui: AnnotationGUI):
         super().__init__(gui.tk_root)
         self.gui: AnnotationGUI = gui
         self.title("Manual annotations")
-        self.geometry("900x500")
+        self.geometry("1000x500")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        # rows are identified by their position, refresh() rebuilds this mapping
+        self.iid_to_key: dict[str, AnnotationKey] = {}
 
         ttk.Label(
             self,
             text="Double-click a row or press Space to keep / discard it. \"Write to database\" adds the kept new "
                  "annotations and removes the discarded ones from the database.",
-            wraplength=860, padding=(10, 10, 10, 5)
+            wraplength=960, padding=(10, 10, 10, 5)
         ).pack(fill="x")
 
         tk_table_frame = ttk.Frame(self, padding=(10, 0))
         tk_table_frame.pack(fill="both", expand=True)
         columns: dict[str, tuple[str, int, str]] = {
             "keep": ("Keep", 45, "center"),
-            "state": ("State", 90, "center"),
+            "state": ("State", 85, "center"),
+            "kind": ("Kind", 110, "w"),
             "feature_id_meas": ("Meas. ID", 70, "center"),
-            "feature_id_lib": ("Lib. ID", 70, "center"),
-            "name": ("Compound name", 250, "w"),
-            "adduct": ("Adduct", 90, "w"),
+            "reference": ("Reference", 90, "center"),
+            "name": ("Name", 250, "w"),
+            "formula": ("Formula", 110, "w"),
+            "adduct": ("Adduct", 85, "w"),
             "ms2_score": ("MS2 score", 75, "e"),
         }
         self.tk_table = ttk.Treeview(tk_table_frame, columns=list(columns), show="headings", selectmode="extended")
@@ -1276,9 +1514,10 @@ class AnnotationManagerWindow(tk.Toplevel):
                    command=lambda: self.gui.toggle_annotations(self._get_selected_keys(), keep=False)).pack(
             side="left", padx=5)
         ttk.Button(tk_buttons, text="Keep all",
-                   command=lambda: self.gui.toggle_annotations(self._get_all_keys(), keep=True)).pack(side="left")
+                   command=lambda: self.gui.toggle_annotations(list(self.iid_to_key.values()), keep=True)).pack(
+            side="left")
         ttk.Button(tk_buttons, text="Discard all",
-                   command=lambda: self.gui.toggle_annotations(self._get_all_keys(), keep=False)).pack(
+                   command=lambda: self.gui.toggle_annotations(list(self.iid_to_key.values()), keep=False)).pack(
             side="left", padx=5)
         ttk.Button(tk_buttons, text="Close", command=self.on_close).pack(side="right")
         ttk.Button(tk_buttons, text="Write to database",
@@ -1286,56 +1525,264 @@ class AnnotationManagerWindow(tk.Toplevel):
 
         self.refresh()
 
-    @staticmethod
-    def _key_to_iid(key: AnnotationKey) -> str:
-        return f"{key[0]}_{key[1]}"
-
-    @staticmethod
-    def _iid_to_key(iid: str) -> AnnotationKey:
-        f_id_meas, f_id_lib = iid.split("_")
-        return int(f_id_meas), int(f_id_lib)
-
     def _get_selected_keys(self) -> list[AnnotationKey]:
-        return [self._iid_to_key(iid) for iid in self.tk_table.selection()]
-
-    def _get_all_keys(self) -> list[AnnotationKey]:
-        return [self._iid_to_key(iid) for iid in self.tk_table.get_children()]
+        return [self.iid_to_key[iid] for iid in self.tk_table.selection()]
 
     def refresh(self):
         """Rebuild the rows from the annotation state of the GUI, keeping selection and scroll position."""
-        selection = self.tk_table.selection()
+        selected_keys = set(self._get_selected_keys())
         y_view = self.tk_table.yview()[0]
         self.tk_table.delete(*self.tk_table.get_children())
+        self.iid_to_key = {}
 
         # new annotations first, then the ones in the database, each sorted by measured feature
-        rows = ([(key, info, False) for key, info in sorted(self.gui.pending_annotations.items())]
-                + [(key, info, True) for key, info in sorted(self.gui.saved_annotations.items())])
-        for key, info, is_saved in rows:
+        def sort_key(item) -> tuple:
+            (kind, f_id_meas, ref), _ = item
+            return f_id_meas, kind, ref
+
+        rows = ([(key, info, False) for key, info in sorted(self.gui.pending_annotations.items(), key=sort_key)]
+                + [(key, info, True) for key, info in sorted(self.gui.saved_annotations.items(), key=sort_key)])
+        for idx, (key, info, is_saved) in enumerate(rows):
+            kind, f_id_meas, _ = key
             discarded: bool = key in self.gui.discarded_annotations
             if is_saved:
                 state = "to remove" if discarded else "in database"
             else:
                 state = "discarded" if discarded else "to add"
+            reference = info.get("reference")
             ms2_score = info.get("ms2_score")
-            self.tk_table.insert("", "end", iid=self._key_to_iid(key), tags=(state,), values=(
+            iid = str(idx)
+            self.iid_to_key[iid] = key
+            self.tk_table.insert("", "end", iid=iid, tags=(state,), values=(
                 "✗" if discarded else "✓",
                 state,
-                key[0],
-                key[1],
+                ANNOTATION_KIND_LABELS.get(kind, kind),
+                f_id_meas,
+                "" if reference is None else f"{'lib.' if kind == 'library' else 'parent'} {reference}",
                 info.get("name") or "",
+                info.get("formula") or "",
                 info.get("adduct") or "",
                 "" if ms2_score is None or pd.isna(ms2_score) else f"{ms2_score:.3f}",
             ))
 
-        self.tk_table.selection_set([iid for iid in selection if self.tk_table.exists(iid)])
+        self.tk_table.selection_set([iid for iid, key in self.iid_to_key.items() if key in selected_keys])
         self.tk_table.yview_moveto(y_view)
 
     def on_double_click(self, event):
         if iid := self.tk_table.identify_row(event.y):
-            self.gui.toggle_annotations([self._iid_to_key(iid)])
+            self.gui.toggle_annotations([self.iid_to_key[iid]])
 
     def on_close(self):
         self.gui.annotation_window = None
+        self.destroy()
+
+
+class ManualAnnotationDialog(tk.Toplevel):
+    """
+    Dialog to annotate a measured feature with a compound entered by hand.
+
+    Name, formula, adduct and SMILES can be typed in or taken from the IPL builder of LipidCalculator.
+    The m/z calculated from formula and adduct is compared to the m/z of the feature.
+    """
+
+    def __init__(self, gui: AnnotationGUI, f_id_meas: int | None):
+        super().__init__(gui.tk_root)
+        self.gui: AnnotationGUI = gui
+        self.title("Add manual annotation")
+        self.resizable(True, False)
+        self.tk_f_id_meas = tk.StringVar(self, value="" if f_id_meas is None else str(f_id_meas))
+        self.tk_name = tk.StringVar(self)
+        self.tk_formula = tk.StringVar(self)
+        self.tk_adduct = tk.StringVar(self, value="[M+H]+")
+        self.tk_smiles = tk.StringVar(self)
+        self.tk_mz_info = tk.StringVar(self)
+
+        tk_form = ttk.Frame(self, padding=10)
+        tk_form.pack(fill="x")
+        rows = [("Measured feature ID", ttk.Entry(tk_form, textvariable=self.tk_f_id_meas, width=12)),
+                ("Name", ttk.Entry(tk_form, textvariable=self.tk_name, width=50)),
+                ("Formula (neutral)", ttk.Entry(tk_form, textvariable=self.tk_formula, width=30)),
+                ("Adduct", ttk.Combobox(tk_form, textvariable=self.tk_adduct, values=ADDUCTS, width=15)),
+                ("SMILES (optional)", ttk.Entry(tk_form, textvariable=self.tk_smiles, width=50))]
+        for row, (label, widget) in enumerate(rows):
+            ttk.Label(tk_form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+            widget.grid(row=row, column=1, sticky="w")
+        ttk.Label(tk_form, textvariable=self.tk_mz_info, foreground="gray").grid(
+            row=len(rows), column=0, columnspan=2, sticky="w", pady=(5, 0))
+        for variable in (self.tk_f_id_meas, self.tk_formula, self.tk_adduct):
+            variable.trace_add("write", lambda *_: self._update_mz_info())
+
+        tk_buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        tk_buttons.pack(fill="x")
+        ttk.Button(tk_buttons, text="Build IPL ...", command=self.on_click_build_ipl).pack(side="left")
+        ttk.Button(tk_buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(tk_buttons, text="Add", command=self.on_click_add).pack(side="right", padx=5)
+        self._update_mz_info()
+
+    def _update_mz_info(self):
+        """Show the m/z calculated from formula and adduct next to the measured m/z of the feature."""
+        parts: list[str] = []
+        mz_meas = None
+        try:
+            mz_meas = self.gui.meas_db.mzs.get(int(self.tk_f_id_meas.get()))
+            if mz_meas is not None:
+                parts.append(f"measured m/z {mz_meas:.4f}")
+        except ValueError:
+            pass
+        try:
+            mz_calc = Adduct(self.tk_adduct.get().strip()).mass_to_mz(CompoundDict(self.tk_formula.get().strip()).mass)
+            parts.append(f"calculated m/z {mz_calc:.4f}")
+            if mz_meas is not None:
+                parts.append(f"Δ {(mz_meas - mz_calc) / mz_calc * 1e6:.1f} ppm")
+        except Exception:  # formula or adduct incomplete
+            pass
+        self.tk_mz_info.set(", ".join(parts))
+
+    def on_click_build_ipl(self):
+        """Open the IPL builder of LipidCalculator, its "Use for annotation" button fills this dialog."""
+        try:
+            from LipidCalculator.gui.ipl_gui import SingleIPLFrame
+        except Exception as error:
+            messagebox.showerror(
+                "IPL builder", f"The IPL builder of LipidCalculator is not available:\n{error}", parent=self
+            )
+            return
+        tk_window = tk.Toplevel(self)
+        tk_window.title("IPL builder (select an adduct in the table, then \"Use for annotation\")")
+        tk_window.geometry("1100x750")
+        frames: list = []
+        frame = SingleIPLFrame(tk_window, send_targets={
+            "Use for annotation": lambda payload: self._use_ipl(frames[0], payload, tk_window)
+        })
+        frames.append(frame)
+        frame.pack(fill="both", expand=True)
+
+    def _use_ipl(self, frame, payload: dict, tk_window: tk.Toplevel):
+        """Take name, formula, SMILES and the selected adduct (if any) from the IPL builder."""
+        self.tk_name.set(frame.name_var.get())
+        self.tk_formula.set(payload["formula"])
+        if payload.get("adduct"):
+            self.tk_adduct.set(payload["adduct"])
+        self.tk_smiles.set(frame.smiles_var.get())
+        tk_window.destroy()
+        self.lift()
+
+    def on_click_add(self):
+        try:
+            f_id_meas = int(self.tk_f_id_meas.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Measured feature ID must be a whole number.", parent=self)
+            return
+        if f_id_meas not in self.gui.meas_db.mzs:
+            messagebox.showerror("Invalid input", f"There is no measured feature {f_id_meas}.", parent=self)
+            return
+        name, formula = self.tk_name.get().strip(), self.tk_formula.get().strip() or None
+        adduct, smiles = self.tk_adduct.get().strip() or None, self.tk_smiles.get().strip() or None
+        if not name:
+            messagebox.showerror("Invalid input", "Please enter a name.", parent=self)
+            return
+        try:
+            if formula:
+                CompoundDict(formula)
+            if adduct:
+                Adduct(adduct)
+        except Exception as error:
+            messagebox.showerror("Invalid input", f"Invalid formula or adduct:\n{error}", parent=self)
+            return
+
+        added: bool = self.gui.add_pending_annotation(("manual", f_id_meas, f"{name}|{adduct}"), dict(
+            kind="manual", name=name, formula=formula, adduct=adduct, smiles=smiles, reference=None
+        ))
+        self.gui.tk_status_field.config(
+            text=f"Added manual annotation {name} {adduct or ''} for feature {f_id_meas}." if added
+            else f"Feature {f_id_meas} is already annotated as {name} {adduct or ''}."
+        )
+        self.destroy()
+
+
+class InSourceFragmentDialog(tk.Toplevel):
+    """
+    Dialog to annotate a measured feature as in-source fragment of another one.
+
+    Shows the differences in m/z and RT of both features and the marked mass differences connecting them.
+    """
+
+    def __init__(self, gui: AnnotationGUI, f_id_fragment: int | None, f_id_parent: int | None):
+        super().__init__(gui.tk_root)
+        self.gui: AnnotationGUI = gui
+        self.title("Mark in-source fragment")
+        self.resizable(True, False)
+        self.tk_fragment = tk.StringVar(self, value="" if f_id_fragment is None else str(f_id_fragment))
+        self.tk_parent = tk.StringVar(self, value="" if f_id_parent is None else str(f_id_parent))
+        self.tk_note = tk.StringVar(self)
+        self.tk_info = tk.StringVar(self)
+
+        tk_form = ttk.Frame(self, padding=10)
+        tk_form.pack(fill="x")
+        ttk.Label(tk_form, text="Fragment feature ID").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_fragment, width=12).grid(row=0, column=1, sticky="w")
+        ttk.Button(tk_form, text="Swap", command=self.on_click_swap).grid(row=0, column=2, rowspan=2, padx=8)
+        ttk.Label(tk_form, text="Parent feature ID").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_parent, width=12).grid(row=1, column=1, sticky="w")
+        ttk.Label(tk_form, text="Note (optional)").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_note, width=40).grid(row=2, column=1, columnspan=2, sticky="w")
+        ttk.Label(tk_form, textvariable=self.tk_info, foreground="gray", justify="left").grid(
+            row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
+        for variable in (self.tk_fragment, self.tk_parent):
+            variable.trace_add("write", lambda *_: self._update_info())
+
+        tk_buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        tk_buttons.pack(fill="x")
+        ttk.Button(tk_buttons, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(tk_buttons, text="Add", command=self.on_click_add).pack(side="right", padx=5)
+        self._update_info()
+
+    def _read_feature_ids(self) -> tuple[int, int] | None:
+        try:
+            f_ids = int(self.tk_fragment.get()), int(self.tk_parent.get())
+        except ValueError:
+            return None
+        return f_ids if all(f_id in self.gui.meas_db.mzs for f_id in f_ids) else None
+
+    def _update_info(self):
+        """Show Δm/z, ΔRT and the marked mass differences connecting both features, suggest the note from them."""
+        if (f_ids := self._read_feature_ids()) is None:
+            self.tk_info.set("Enter two measured feature IDs (shift-click both in the scatter plot to prefill).")
+            return
+        (rt_fragment, mz_fragment), (rt_parent, mz_parent) = (self.gui._get_rt_mz(f_id) for f_id in f_ids)
+        lines = [f"Δm/z (parent - fragment) {mz_parent - mz_fragment:.4f}, ΔRT {rt_parent - rt_fragment:+.2f} min"]
+        if mz_parent < mz_fragment:
+            lines.append("The parent has a lower m/z than the fragment.")
+        if marked := self.gui.find_marked_mass_differences(*f_ids):
+            lines.append(f"Marked mass differences: {', '.join(marked)}")
+            if not self.tk_note.get():
+                self.tk_note.set(f"loss of {', '.join(marked)}")
+        self.tk_info.set("\n".join(lines))
+
+    def on_click_swap(self):
+        fragment, parent = self.tk_fragment.get(), self.tk_parent.get()
+        self.tk_fragment.set(parent)
+        self.tk_parent.set(fragment)
+
+    def on_click_add(self):
+        if (f_ids := self._read_feature_ids()) is None:
+            messagebox.showerror("Invalid input", "Please enter two existing measured feature IDs.", parent=self)
+            return
+        f_id_fragment, f_id_parent = f_ids
+        if f_id_fragment == f_id_parent:
+            messagebox.showerror("Invalid input", "Fragment and parent must be different features.", parent=self)
+            return
+        note: str | None = self.tk_note.get().strip() or None
+        added: bool = self.gui.add_pending_annotation(("in_source_fragment", f_id_fragment, str(f_id_parent)), dict(
+            kind="in_source_fragment",
+            name=f"in-source fragment of {f_id_parent}" + (f" ({note})" if note else ""),
+            note=note,
+            reference=f_id_parent,
+        ))
+        self.gui.tk_status_field.config(
+            text=f"Marked feature {f_id_fragment} as in-source fragment of {f_id_parent}." if added
+            else f"Feature {f_id_fragment} is already marked as in-source fragment of {f_id_parent}."
+        )
         self.destroy()
 
 

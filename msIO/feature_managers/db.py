@@ -24,7 +24,7 @@ from msIO.list_of_ions.base import PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
-from sqlalchemy import select, inspect, text
+from sqlalchemy import select, inspect, text, or_
 from sqlalchemy.orm import selectinload, joinedload
 
 # need to import so that sqlalchemy knows about relationships
@@ -34,6 +34,17 @@ from msIO.features.sirius import CompoundCandidate, FormulaCandidate, FeatureSir
 from msIO.features.combined import FeatureCombined
 
 logger = logging.getLogger(__name__)
+
+# manual annotations are compound candidates whose sirius_compound_folder starts with one of these prefixes
+MANUAL_LIBRARY_ANNOTATION: str = 'manual_library_annotation'  # match from a library
+MANUAL_ANNOTATION: str = 'manual_annotation'  # compound entered by hand
+MANUAL_IN_SOURCE_FRAGMENT: str = 'manual_in_source_fragment'  # in-source fragment of another measured feature
+ManualAnnotationKind = Literal['library', 'manual', 'in_source_fragment']
+MANUAL_ANNOTATION_PREFIXES: dict[ManualAnnotationKind, str] = {
+    'library': MANUAL_LIBRARY_ANNOTATION,
+    'manual': MANUAL_ANNOTATION,
+    'in_source_fragment': MANUAL_IN_SOURCE_FRAGMENT,
+}
 
 
 def eager_options_for(cls, strategy="selectin", maxdepth=10, seen=None):
@@ -520,6 +531,20 @@ class FeatureManagerDB:
     def find_objects_for_attr(self, attr_name: str) -> list[object]:
         raise NotImplementedError()
 
+    def _append_compound_candidate(self, f_id_meas: int, compound_candidate: CompoundCandidate):
+        """Add a compound candidate to a measured feature (creates the sirius entry of the feature if missing)."""
+        # cannot use get_feature because session needs to remain active
+        with self.session_maker() as session:
+            f_meas: FeatureCombined = session.execute(
+                select(FeatureCombined)
+                .where(FeatureCombined.feature_id == f_id_meas)
+            ).unique().scalar_one()
+            # it is possible that this feature does not have a sirius annotation
+            if f_meas.sirius is None:
+                f_meas.sirius = FeatureSirius(feature_id=f_id_meas)
+            f_meas.sirius.compound_candidates.append(compound_candidate)
+            session.commit()
+
     def add_annotations_from_library(
             self,
             library: "Library",
@@ -531,31 +556,44 @@ class FeatureManagerDB:
             warnings.warn(f'Measured feature with id {f_id_meas} has already been annotated with library feature {f_id_lib}.')
             return
 
-        # cannot use get_feature because session needs to remain active
-        with self.session_maker() as session:
-            f_meas: FeatureCombined = session.execute(
-                select(FeatureCombined)
-                .where(FeatureCombined.feature_id == f_id_meas)
-            ).unique().scalar_one()
-            # add attributes from library match to measured feature
-            f_lib: FeatureCombined = library.get_feature(f_id_lib)  # read only
-            # it is possible that this feature does not have a sirius annotation
-            if f_meas.sirius is None:
-                f_meas.sirius = FeatureSirius(feature_id=f_id_meas)
-            # add as compound candidate
-            compound_candidate_lib: CompoundCandidate = f_lib.sirius.compound_candidates[0]
-            compound_candidate_meas: CompoundCandidate = CompoundCandidate(
-                num_adducts=1,
-                confidence_score=ms2_score,
-                adduct_sirius=f_lib.metaboscape.adduct_metaboscape,
-                name_sirius=compound_candidate_lib.name_sirius,
-                smiles=compound_candidate_lib.smiles,
-                inchi=compound_candidate_lib.inchi,
-                xlogp=compound_candidate_lib.xlogp,
-                sirius_compound_folder=f'manual_library_annotation from "{os.path.basename(library.path_file)}" for feature "{f_id_lib}"'
-            )
-            f_meas.sirius.compound_candidates.append(compound_candidate_meas)
-            session.commit()
+        # add attributes from library match to measured feature
+        f_lib: FeatureCombined = library.get_feature(f_id_lib)  # read only
+        compound_candidate_lib: CompoundCandidate = f_lib.sirius.compound_candidates[0]
+        self._append_compound_candidate(f_id_meas, CompoundCandidate(
+            num_adducts=1,
+            confidence_score=ms2_score,
+            adduct_sirius=f_lib.metaboscape.adduct_metaboscape,
+            name_sirius=compound_candidate_lib.name_sirius,
+            smiles=compound_candidate_lib.smiles,
+            inchi=compound_candidate_lib.inchi,
+            xlogp=compound_candidate_lib.xlogp,
+            sirius_compound_folder=f'{MANUAL_LIBRARY_ANNOTATION} from "{os.path.basename(library.path_file)}" for feature "{f_id_lib}"'
+        ))
+
+    def add_manual_annotation(
+            self,
+            f_id_meas: int,
+            name: str,
+            formula: str = None,
+            adduct: str = None,
+            smiles: str = None
+    ):
+        """Annotate a measured feature with a compound entered by hand (e.g. built with the LipidCalculator GUI)."""
+        self._append_compound_candidate(f_id_meas, CompoundCandidate(
+            num_adducts=1,
+            name_sirius=name,
+            formula_sirius=formula,
+            adduct_sirius=adduct,
+            smiles=smiles,
+            sirius_compound_folder=MANUAL_ANNOTATION
+        ))
+
+    def add_in_source_fragment_annotation(self, f_id_fragment: int, f_id_parent: int, note: str = None):
+        """Annotate a measured feature as in-source fragment of another measured feature."""
+        self._append_compound_candidate(f_id_fragment, CompoundCandidate(
+            name_sirius=f'in-source fragment of {f_id_parent}' + (f' ({note})' if note else ''),
+            sirius_compound_folder=f'{MANUAL_IN_SOURCE_FRAGMENT} of feature "{f_id_parent}"'
+        ))
 
     def plot_scatter(
             self,
@@ -606,16 +644,43 @@ class FeatureManagerDB:
 
         return ax
 
-    def get_manual_annotations(self):
+    @staticmethod
+    def get_manual_annotation_kind(compound_candidate: CompoundCandidate) -> ManualAnnotationKind | None:
+        """Kind of a manual annotation, identified by the prefix of sirius_compound_folder."""
+        folder: str = compound_candidate.sirius_compound_folder or ''
+        for kind, prefix in MANUAL_ANNOTATION_PREFIXES.items():
+            if folder.startswith(prefix):
+                return kind
+        return None
+
+    @staticmethod
+    def get_referenced_feature_id(compound_candidate: CompoundCandidate) -> int | None:
+        """Library feature of a library annotation or parent feature of an in-source fragment annotation."""
+        folder: str = compound_candidate.sirius_compound_folder or ''
+        if ' feature "' not in folder:
+            return None
+        return int(folder.split(' feature "')[1].strip('"'))
+
+    def get_manual_annotations(self, kinds: Iterable[ManualAnnotationKind] = None) -> list[CompoundCandidate]:
+        """Manual annotations of the given kinds (default: all kinds)."""
+        prefixes = [MANUAL_ANNOTATION_PREFIXES[kind] for kind in (kinds or MANUAL_ANNOTATION_PREFIXES)]
         with self.session_maker() as session:
             opts = eager_options_for(CompoundCandidate, strategy="selectin", maxdepth=1)
             cpd_candidates: list[CompoundCandidate] = (
                 session.query(CompoundCandidate)
-                .filter(CompoundCandidate.sirius_compound_folder.startswith('manual_library_annotation'))
+                .filter(or_(*(CompoundCandidate.sirius_compound_folder.startswith(p) for p in prefixes)))
                 .options(*opts)
                 .all()
             )
             return cpd_candidates
+
+    def remove_annotations_by_id(self, compound_candidate_ids: Iterable[int]):
+        """Delete manual annotations by the ids of their compound candidates."""
+        with self.session_maker() as session:
+            session.query(CompoundCandidate).filter(
+                CompoundCandidate.id.in_(list(compound_candidate_ids))
+            ).delete(synchronize_session=False)
+            session.commit()
 
     def remove_annotation(self, f_id_meas, f_id_lib):
         ids_to_remove = [
@@ -631,7 +696,7 @@ class FeatureManagerDB:
     def get_f_ids_manual_annotations(self):
         # dictionary mapping the compound candidate ids to a tuple of feature_id_meas, feature_id_lib
         f_ids: dict[int, tuple[int, int]] = {}
-        for cpd_candidate in self.get_manual_annotations():
+        for cpd_candidate in self.get_manual_annotations(kinds=['library']):
             f_id_meas = cpd_candidate.feature_id
             f_id_lib = int(cpd_candidate.sirius_compound_folder.split('for feature ')[1].strip('"'))
             f_ids[cpd_candidate.id] = (f_id_meas, f_id_lib)
