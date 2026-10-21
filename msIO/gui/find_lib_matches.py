@@ -296,6 +296,7 @@ class AnnotationGUI:
             "RT": ("RT (min)", 60, "center"),
             "name": ("Compound name", 180, "w"),
             "formula": ("Formula", 110, "w"),
+            "adduct": ("Adduct", 80, "w"),
             "ms2_score": ("MS2 score", 70, "e"),
             "n_hits_ms2": ("#MS2 peaks", 75, "e"),
             "dmz_mda": ("Δm/z (mDa)", 80, "e"),
@@ -1185,7 +1186,9 @@ class AnnotationGUI:
             return
         rt, mz = self._get_rt_mz(closest_f_id)
 
-        if "shift" in (getattr(event, "modifiers", None) or ()) or event.key == "shift":
+        # modifiers come from the state of this click; event.key is the last key seen by the canvas and can get
+        # stuck at "shift" when the key is released while another widget has the focus
+        if "shift" in event.modifiers:
             self.add_feature_to_comparison(closest_f_id)
             return
 
