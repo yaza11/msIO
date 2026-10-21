@@ -1158,12 +1158,11 @@ class AnnotationGUI:
 
     def _find_closest_feature(self, x: float, y: float) -> int | None:
         """
-        Feature closest to a point of the scatter plot (only highlighted features if there are any).
+        Feature closest to a point of the scatter plot (highlighted or not).
 
         RT and m/z have different scales, so the distance is measured relative to the visible axis range.
         """
-        candidate_f_ids = self.highlighted_f_ids if self.highlighted_f_ids else self.meas_db.feature_ids
-        points = {f_id: p for f_id in candidate_f_ids if (p := self._get_rt_mz(f_id)) is not None}
+        points = {f_id: p for f_id in self.meas_db.feature_ids if (p := self._get_rt_mz(f_id)) is not None}
         if not points:
             return None
         f_ids = np.array(list(points.keys()))
