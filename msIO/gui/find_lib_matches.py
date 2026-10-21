@@ -7,9 +7,13 @@ Workflow:
        spectra of the measurement are loaded in the background.
     2. Set the matching parameters and click "Find Matches".
     3. Narrow down the results table with the filters (applied while typing) or by
-       clicking a feature in the scatter plot.
-    4. Select a row to plot the match overview, then "Annotate Feature" to store the
-       library match as a manual annotation in the measured database.
+       clicking a feature in the scatter plot. Features with specific MS2 fragments or
+       neutral losses can be highlighted in the scatter plot.
+    4. Select a row to plot the match overview. Shift-click two features in the scatter
+       plot to compare their MS2 spectra instead.
+    5. "Add annotation" collects library matches in a local list. "Manage annotations"
+       opens a window to review new and existing manual annotations and to write the
+       changes to the measured database.
 
 Slow work (loading MS2 spectra, building the match overview figure) runs in worker
 threads. Worker threads never touch tk widgets; they hand their results back to the
@@ -25,10 +29,45 @@ from tkinter import messagebox, filedialog, ttk
 from LipidCalculator import CompoundDict
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 
 from msIO.feature_managers.db import Library, FeatureManagerDB, lib_match_result_to_table
+from msIO.metrics import cosine_similarity_sym
 
 SQLITE_FILE_TYPES: list[tuple[str, str]] = [("SQLite Files", "*.sqlite"), ("All files", "*.*")]
+
+# (measured feature id, library feature id) identifies a manual annotation
+AnnotationKey = tuple[int, int]
+
+# colors of the two features compared by shift-click, used in the scatter plot and the MS2 comparison
+COMPARISON_COLORS: tuple[str, str] = ("C2", "C1")
+
+
+def parse_masses(text: str) -> list[tuple[str, float]]:
+    """
+    Parse ";"-separated m/z values or formulas into (entry, mass) pairs.
+
+    Formulas are converted with LipidCalculator, a trailing "+" or "-" gives the mass of the ion
+    (e.g. "C5H15NO4P+" for the phosphocholine fragment).
+
+    Raises:
+        ValueError: if an entry is neither a number nor a valid formula, or its mass is not positive.
+    """
+    masses: list[tuple[str, float]] = []
+    for entry in text.split(';'):
+        if not (entry := entry.strip()):
+            continue
+        try:
+            mass = float(entry)
+        except ValueError:
+            try:
+                mass = CompoundDict(entry).mass
+            except Exception:
+                raise ValueError(f'"{entry}" is neither a number nor a valid formula.')
+        if mass <= 0:
+            raise ValueError(f'"{entry}" does not have a positive mass.')
+        masses.append((entry, mass))
+    return masses
 
 
 class AnnotationGUI:
@@ -48,6 +87,7 @@ class AnnotationGUI:
         width: int = int(self.tk_root.winfo_screenwidth() * 0.8)
         height: int = int(self.tk_root.winfo_screenheight() * 0.8)
         self.tk_root.geometry(f"{width}x{height}+10+10")
+        self.tk_root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # database selection
         self.tk_meas_path: tk.StringVar = tk.StringVar()
@@ -79,20 +119,31 @@ class AnnotationGUI:
         self.live_filter_job: str = None
         self.last_filter_values: tuple[str, ...] = None
 
-        # match overview, the figure is built in a worker thread
+        # manual annotations: changes are collected locally and only written to the measured database on request
+        self.saved_annotations: dict[AnnotationKey, dict] = {}  # in the measured database
+        self.pending_annotations: dict[AnnotationKey, dict] = {}  # to be added
+        self.discarded_annotations: set[AnnotationKey] = set()  # pending ones not to add, saved ones to remove
+        self.annotation_window: AnnotationManagerWindow = None
+
+        # match overview panel, shows either the match overview (built in a worker thread) or an MS2 comparison
         self.match_canvas: FigureCanvasTkAgg = None
         self.match_toolbar: NavigationToolbar2Tk = None
         self.match_plot_running: bool = False
-        self.pending_match_plot: dict = None  # kwargs for Library.plot_match of the latest request
+        # latest match overview request: (request number, kwargs for Library.plot_match)
+        self.pending_match_plot: tuple[int, dict] = None
+        # incremented for every new content of the panel, so a slow match overview can't replace newer content
+        self.match_panel_request: int = 0
 
         # scatter plot (m/z vs RT) of the measurement
         self.scatter_canvas: FigureCanvasTkAgg = None
         self.scatter_toolbar: NavigationToolbar2Tk = None
         self.scatter_ax = None
         self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(value=True)
-        self.neutral_loss_f_ids: list[int] = None  # features highlighted by the neutral loss filter
+        self.highlighted_f_ids: list[int] = None  # features with the requested fragments / losses
+        self.compared_f_ids: list[int] = []  # up to two features selected by shift-click
         self.filtered_features_marker = None  # black circles around features in the filtered table
         self.selected_feature_marker = None  # red circle around the feature selected in the table
+        self.compared_features_markers: list = []  # squares around the compared features
 
         # background colors of table rows, alternating between measured features
         self.table_row_colors: list[str] = ["#E5FFCC", "#FFCCCC", "#CCFFCC", "#CCFFFF", "#CCCCFF", "#FFE5CC"]
@@ -106,7 +157,7 @@ class AnnotationGUI:
         """
         Layout:
             top:    database selection | matching parameters
-            middle: filters, results table, annotate button | match overview above scatter plot
+            middle: filters, results table, annotation buttons | match overview above scatter plot
             bottom: status bar
         """
         tk_top_frame = ttk.Frame(self.tk_root)
@@ -127,9 +178,7 @@ class AnnotationGUI:
         tk_main_area.add(tk_results_pane, weight=1)
         self._create_filters(tk_results_pane)
         self._create_matches_table(tk_results_pane)
-        ttk.Button(tk_results_pane, text="Annotate Feature", command=self.on_click_annotate).pack(
-            anchor="e", pady=(5, 0)
-        )
+        self._create_annotation_buttons(tk_results_pane)
 
         tk_plot_area = ttk.PanedWindow(tk_main_area, orient="vertical")
         tk_main_area.add(tk_plot_area, weight=1)
@@ -240,6 +289,7 @@ class AnnotationGUI:
         tk_table_frame.pack(fill="both", expand=True, pady=(5, 0))
 
         # column name in matches_table: (heading, width, anchor), this defines the order
+        # "annotation" is not in matches_table, it shows the state of the manual annotation of the match
         columns: dict[str, tuple[str, int, str]] = {
             "feature_id_meas": ("Meas. ID", 60, "center"),
             "feature_id_lib": ("Lib. ID", 60, "center"),
@@ -250,6 +300,7 @@ class AnnotationGUI:
             "n_hits_ms2": ("#MS2 peaks", 75, "e"),
             "dmz_mda": ("Δm/z (mDa)", 80, "e"),
             "dmz_ppm": ("Δm/z (ppm)", 80, "e"),
+            "annotation": ("Annotation", 85, "center"),
             "source_library": ("Source", 150, "w"),
         }
         self.table_columns: list[str] = list(columns)
@@ -274,31 +325,60 @@ class AnnotationGUI:
         tk_table_frame.rowconfigure(0, weight=1)
         tk_table_frame.columnconfigure(0, weight=1)
 
+    def _create_annotation_buttons(self, parent):
+        tk_button_frame = ttk.Frame(parent)
+        tk_button_frame.pack(fill="x", pady=(5, 0))
+        self.tk_manage_annotations_button = ttk.Button(
+            tk_button_frame, text="Manage annotations", command=self.on_click_manage_annotations
+        )
+        self.tk_manage_annotations_button.pack(side="right")
+        ttk.Button(tk_button_frame, text="Add annotation", command=self.on_click_add_annotation).pack(
+            side="right", padx=5
+        )
+
     def _create_match_plot_panel(self, parent):
         self.tk_match_plot_frame = ttk.LabelFrame(parent, text="Match overview (select a row in the table)")
         parent.add(self.tk_match_plot_frame, weight=3)
 
     def _create_scatter_plot_panel(self, parent):
-        tk_scatter_panel = ttk.LabelFrame(parent, text="Scatter plot m/z vs RT (click a feature to filter the table)")
+        tk_scatter_panel = ttk.LabelFrame(
+            parent, text="Scatter plot m/z vs RT (click: filter table, shift-click two features: compare MS2)"
+        )
         parent.add(tk_scatter_panel, weight=2)
 
-        tk_scatter_buttons = ttk.Frame(tk_scatter_panel, padding=5)
-        tk_scatter_buttons.pack(fill="x")
-        ttk.Checkbutton(tk_scatter_buttons, text="Show annotations", variable=self.tk_show_annotations,
-                        command=self.redraw_scatter_plot).pack(side="left", padx=3)
-        ttk.Button(tk_scatter_buttons, text="Highlight NH3 loss",
-                   command=self.on_click_highlight_nh3_loss).pack(side="left", padx=3)
-        ttk.Button(tk_scatter_buttons, text="Remove highlight",
-                   command=self.on_click_remove_highlight).pack(side="left", padx=3)
+        tk_controls = ttk.Frame(tk_scatter_panel, padding=5)
+        tk_controls.pack(fill="x")
+        ttk.Checkbutton(tk_controls, text="Show annotations", variable=self.tk_show_annotations,
+                        command=self.redraw_scatter_plot).grid(row=0, column=0, columnspan=2, sticky="w")
+
+        # highlight features with MS2 fragments / neutral losses, entries are m/z values or formulas
+        ttk.Label(tk_controls, text="Fragments (a; b)").grid(row=1, column=0, sticky="w", pady=2)
+        self.tk_fragments_entry = ttk.Entry(tk_controls, width=22)
+        self.tk_fragments_entry.grid(row=1, column=1, sticky="w", padx=(4, 10))
+        ttk.Label(tk_controls, text="Losses (a; b)").grid(row=1, column=2, sticky="w")
+        self.tk_losses_entry = ttk.Entry(tk_controls, width=22)
+        self.tk_losses_entry.grid(row=1, column=3, sticky="w", padx=(4, 10))
+        ttk.Label(tk_controls, text="Match").grid(row=1, column=4, sticky="w")
+        self.tk_highlight_mode: ttk.Combobox = ttk.Combobox(
+            tk_controls, state="readonly", values=["all", "any"], width=4
+        )
+        self.tk_highlight_mode.set("all")
+        self.tk_highlight_mode.grid(row=1, column=5, sticky="w", padx=(4, 10))
+        ttk.Button(tk_controls, text="Highlight", command=self.on_click_highlight).grid(row=1, column=6, padx=3)
+        ttk.Button(tk_controls, text="Remove highlight", command=self.on_click_remove_highlight).grid(row=1, column=7)
+        for tk_entry in (self.tk_fragments_entry, self.tk_losses_entry):
+            tk_entry.bind("<Return>", lambda event: self.on_click_highlight())
 
         self.tk_scatter_plot_frame = ttk.Frame(tk_scatter_panel)
         self.tk_scatter_plot_frame.pack(fill="both", expand=True)
 
     # ------------------------------------------------------------------------------------------------------------------
-    # Loading databases
+    # Loading databases and closing
     # ------------------------------------------------------------------------------------------------------------------
     def on_browse_meas_db(self):
         """Connect to a measured database, reset all results and start loading its MS2 spectra."""
+        if not self._confirm_discarding_unsaved_annotations():
+            return
         path: str = filedialog.askopenfilename(filetypes=SQLITE_FILE_TYPES)
         if not path:
             return
@@ -319,9 +399,17 @@ class AnnotationGUI:
         self.matches_table = pd.DataFrame(columns=self.table_columns)
         self.filtered_matches_table = self.matches_table.copy()
         self._clear_matches_table()
+        self.pending_annotations.clear()
+        self.discarded_annotations.clear()
+        self._load_saved_annotations()
+        self._on_annotations_changed()
+
+        self.match_panel_request += 1
+        self.pending_match_plot = None
         self._destroy_match_plot()
 
-        self.neutral_loss_f_ids = None
+        self.highlighted_f_ids = None
+        self.compared_f_ids = []
         self.draw_scatter_plot()
 
         self.tk_status_field.config(text=f"Measured database loaded, loading MS2 spectra ...: {path}")
@@ -371,6 +459,11 @@ class AnnotationGUI:
             return
         self.tk_lib_path.set(path)
         self.tk_status_field.config(text=f"Library database loaded: {path}")
+
+    def on_close(self):
+        """Closing the main window: warn about annotation changes that were not written to the database."""
+        if self._confirm_discarding_unsaved_annotations():
+            self.tk_root.destroy()
 
     # ------------------------------------------------------------------------------------------------------------------
     # Matching
@@ -573,6 +666,9 @@ class AnnotationGUI:
 
         for _, row in table.iterrows():
             values: list = ["" if pd.isna(value := row.get(column, "")) else value for column in self.table_columns]
+            values[self.table_columns.index("annotation")] = self._get_annotation_state(
+                (int(row.feature_id_meas), int(row.feature_id_lib))
+            )
             self.tk_matches_table.insert("", 'end', values=values, tags=(f"feature_{row.feature_id_meas}",))
 
     def _get_selected_match(self) -> pd.Series | None:
@@ -593,29 +689,156 @@ class AnnotationGUI:
         self.mark_selected_feature(int(match.feature_id_meas))
         self.request_match_plot(int(match.feature_id_meas), int(match.feature_id_lib))
 
-    def on_click_annotate(self):
-        """Store the selected library match as a manual annotation in the measured database."""
+    # ------------------------------------------------------------------------------------------------------------------
+    # Manual annotations
+    # ------------------------------------------------------------------------------------------------------------------
+    def _load_saved_annotations(self):
+        """Read the manual annotations stored in the measured database."""
+        self.saved_annotations = {}
+        for candidate in self.meas_db.get_manual_annotations():
+            # the library feature id is only stored in the folder name, see FeatureManagerDB.add_annotations_from_library
+            f_id_lib = int(candidate.sirius_compound_folder.split('for feature ')[1].strip('"'))
+            self.saved_annotations[(candidate.feature_id, f_id_lib)] = dict(
+                name=candidate.name_sirius,
+                adduct=candidate.adduct_sirius,
+                ms2_score=candidate.confidence_score,
+            )
+
+    def _get_annotation_state(self, key: AnnotationKey) -> str:
+        """State of the manual annotation of a match: "in database", "to remove", "to add" or "" (none)."""
+        if key in self.saved_annotations:
+            return "to remove" if key in self.discarded_annotations else "in database"
+        if key in self.pending_annotations and key not in self.discarded_annotations:
+            return "to add"
+        return ""
+
+    def get_unsaved_annotation_changes(self) -> tuple[list[AnnotationKey], list[AnnotationKey]]:
+        """Annotations to add to and to remove from the measured database."""
+        to_add = [key for key in self.pending_annotations if key not in self.discarded_annotations]
+        to_remove = [key for key in self.saved_annotations if key in self.discarded_annotations]
+        return to_add, to_remove
+
+    def _confirm_discarding_unsaved_annotations(self) -> bool:
+        to_add, to_remove = self.get_unsaved_annotation_changes()
+        if not (to_add or to_remove):
+            return True
+        return messagebox.askyesno(
+            "Unsaved annotations",
+            f"{len(to_add)} annotation(s) to add and {len(to_remove)} to remove have not been written to the "
+            f"database. Discard these changes?"
+        )
+
+    def on_click_add_annotation(self):
+        """Add the selected library match to the local list of annotations (not yet written to the database)."""
         if (match := self._get_selected_match()) is None:
             messagebox.showerror("Error", "Please select a match row first.")
             return
+        key: AnnotationKey = (int(match.feature_id_meas), int(match.feature_id_lib))
 
-        f_id_meas, f_id_lib = int(match.feature_id_meas), int(match.feature_id_lib)
-        if not messagebox.askyesno("Confirm", f"Assign library feature {f_id_lib} to measured feature {f_id_meas}?"):
-            return
-        try:
-            self.meas_db.add_annotations_from_library(
+        if key in self.saved_annotations:
+            # adding an annotation marked for removal again means keeping it
+            self.discarded_annotations.discard(key)
+            self.tk_status_field.config(text=f"Library feature {key[1]} is already annotated for feature {key[0]}.")
+        else:
+            match_result: dict = next(m for m in self.matches[key[0]] if m['feature_id'] == key[1])
+            self.pending_annotations[key] = dict(
+                name=match_result.get('name'),
+                adduct=match_result.get('adduct'),
+                ms2_score=match_result.get('ms2_score'),
                 library=self.lib_db,
-                f_id_meas=f_id_meas,
-                f_id_lib=f_id_lib,
-                ms2_score=match.ms2_score,
             )
-        except Exception as error:
-            messagebox.showerror("Annotation Error", str(error))
+            self.discarded_annotations.discard(key)
+            self.tk_status_field.config(
+                text=f"Added library feature {key[1]} for feature {key[0]} to the annotations. "
+                     f"Use \"Manage annotations\" to write them to the database."
+            )
+        self._on_annotations_changed()
+
+    def toggle_annotations(self, keys: list[AnnotationKey], keep: bool = None):
+        """Mark annotations to keep or discard (keep=None toggles each of them)."""
+        for key in keys:
+            discard = (key not in self.discarded_annotations) if keep is None else not keep
+            if discard:
+                self.discarded_annotations.add(key)
+            else:
+                self.discarded_annotations.discard(key)
+        self._on_annotations_changed()
+
+    def write_annotations_to_db(self, parent: tk.Misc = None):
+        """Add the new and remove the discarded annotations in the measured database (after confirmation)."""
+        to_add, to_remove = self.get_unsaved_annotation_changes()
+        if not (to_add or to_remove):
+            messagebox.showinfo("Annotations", "There are no changes to write.", parent=parent)
             return
-        messagebox.showinfo("Annotation", f"Annotation added for measured feature {f_id_meas}.")
+        if not messagebox.askyesno(
+                "Write annotations",
+                f"Add {len(to_add)} and remove {len(to_remove)} annotation(s) in the measured database?",
+                parent=parent
+        ):
+            return
+
+        errors: list[str] = []
+        failed_additions: set[AnnotationKey] = set()
+        n_removed: int = 0
+        for key in to_add:
+            annotation: dict = self.pending_annotations[key]
+            try:
+                self.meas_db.add_annotations_from_library(
+                    library=annotation['library'],
+                    f_id_meas=key[0],
+                    f_id_lib=key[1],
+                    ms2_score=annotation['ms2_score'],
+                )
+            except Exception as error:
+                failed_additions.add(key)
+                errors.append(f"adding {key[1]} to {key[0]}: {error}")
+        for key in to_remove:
+            try:
+                self.meas_db.remove_annotation(*key)
+                n_removed += 1
+            except Exception as error:
+                errors.append(f"removing {key[1]} from {key[0]}: {error}")
+
+        # failed additions stay in the local list, everything else is now reflected by the database
+        self.pending_annotations = {
+            key: value for key, value in self.pending_annotations.items() if key in failed_additions
+        }
+        self.discarded_annotations.clear()
+        self._load_saved_annotations()
+        self._on_annotations_changed()
+        if self.tk_show_annotations.get():
+            self.redraw_scatter_plot()
+
+        if errors:
+            messagebox.showerror("Annotation Error", "\n".join(errors), parent=parent)
+        self.tk_status_field.config(
+            text=f"Wrote annotations to the database: {len(to_add) - len(failed_additions)} added, {n_removed} removed."
+        )
+
+    def _on_annotations_changed(self):
+        """Update everything that shows annotation states: table column, button text and the manager window."""
+        for item, row in zip(self.tk_matches_table.get_children(), self.filtered_matches_table.itertuples()):
+            self.tk_matches_table.set(
+                item, "annotation", self._get_annotation_state((int(row.feature_id_meas), int(row.feature_id_lib)))
+            )
+        n_changes: int = sum(len(keys) for keys in self.get_unsaved_annotation_changes())
+        self.tk_manage_annotations_button.config(
+            text=f"Manage annotations ({n_changes} unsaved)" if n_changes else "Manage annotations"
+        )
+        if self.annotation_window is not None:
+            self.annotation_window.refresh()
+
+    def on_click_manage_annotations(self):
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
+        if self.annotation_window is None:
+            self.annotation_window = AnnotationManagerWindow(self)
+        else:
+            self.annotation_window.lift()
 
     # ------------------------------------------------------------------------------------------------------------------
-    # Match overview
+    # Match overview panel
     # ------------------------------------------------------------------------------------------------------------------
     @staticmethod
     def _pack_canvas(canvas: FigureCanvasTkAgg):
@@ -624,6 +847,25 @@ class AnnotationGUI:
         # without this, the canvas requests the full figure size and pushes the dividers of the panes
         tk_widget.config(width=1, height=1)
         tk_widget.pack(fill=tk.BOTH, expand=True)
+
+    def _show_in_match_panel(self, fig: Figure, title: str):
+        """Replace the content of the match overview panel."""
+        self._destroy_match_plot()
+        self.tk_match_plot_frame.config(text=title)
+        self.match_canvas = FigureCanvasTkAgg(fig, master=self.tk_match_plot_frame)
+        self.match_toolbar = NavigationToolbar2Tk(self.match_canvas, self.tk_match_plot_frame)
+        self.match_toolbar.update()
+        self.match_toolbar.pack()
+        self._pack_canvas(self.match_canvas)
+        self.match_canvas.draw()
+
+    def _destroy_match_plot(self):
+        if self.match_canvas is not None:
+            self.match_canvas.get_tk_widget().destroy()
+            self.match_canvas = None
+        if self.match_toolbar is not None:
+            self.match_toolbar.destroy()
+            self.match_toolbar = None
 
     def request_match_plot(self, f_id_meas: int, f_id_lib: int):
         """
@@ -642,28 +884,29 @@ class AnnotationGUI:
         # mass accuracy for the theoretical isotope pattern
         mz_tol_da: float = max(max_dmz_da, max_dmz_ppm * 1e-6 * self.meas_db.mzs[f_id_meas])
 
-        self.pending_match_plot = dict(
+        self.match_panel_request += 1
+        self.pending_match_plot = (self.match_panel_request, dict(
             f_id_lib=f_id_lib,
             f_id_meas=f_id_meas,
             meas=self.meas_db,
             mz_tol_da=mz_tol_da,
             annotation_relative_cutoff=0.3,  # TODO: turn this into slider
             match_result=match_result,
-        )
+        ))
         self.tk_status_field.config(text=f"Plotting match {f_id_meas} -> {f_id_lib} ...")
         if not self.match_plot_running:
             self._start_match_plot_worker()
 
     def _start_match_plot_worker(self):
-        plot_kwargs, self.pending_match_plot = self.pending_match_plot, None
+        (request, plot_kwargs), self.pending_match_plot = self.pending_match_plot, None
         self.match_plot_running = True
         threading.Thread(
             target=self._match_plot_worker,
-            args=(self.lib_db, plot_kwargs),
+            args=(self.lib_db, request, plot_kwargs),
             daemon=True
         ).start()
 
-    def _match_plot_worker(self, lib_db: Library, plot_kwargs: dict):
+    def _match_plot_worker(self, lib_db: Library, request: int, plot_kwargs: dict):
         """Worker thread: build the match overview figure (not attached to tk yet)."""
         fig = Figure(figsize=(15, 15))
         try:
@@ -673,16 +916,19 @@ class AnnotationGUI:
             error_text = str(error)
 
         try:
-            self.tk_root.after(0, lambda: self._finish_match_plot(fig, plot_kwargs, error_text))
+            self.tk_root.after(0, lambda: self._finish_match_plot(fig, request, plot_kwargs, error_text))
         except (tk.TclError, RuntimeError):  # window was closed in the meantime
             pass
 
-    def _finish_match_plot(self, fig: Figure, plot_kwargs: dict, error_text: str | None):
-        """Main thread: show the figure built by the worker, or start the next worker if the selection changed."""
+    def _finish_match_plot(self, fig: Figure, request: int, plot_kwargs: dict, error_text: str | None):
+        """Main thread: show the figure built by the worker, unless newer content was requested in the meantime."""
         self.match_plot_running = False
         # selection changed while plotting, skip this figure and plot the latest selection instead
         if self.pending_match_plot is not None:
             self._start_match_plot_worker()
+            return
+        # e.g. an MS2 comparison was shown in the meantime
+        if request != self.match_panel_request:
             return
 
         if error_text is not None:
@@ -690,22 +936,53 @@ class AnnotationGUI:
             messagebox.showerror("Plot Error", f"Could not plot the selected match:\n{error_text}")
             return
 
-        self._destroy_match_plot()
-        self.match_canvas = FigureCanvasTkAgg(fig, master=self.tk_match_plot_frame)
-        self.match_toolbar = NavigationToolbar2Tk(self.match_canvas, self.tk_match_plot_frame)
-        self.match_toolbar.update()
-        self.match_toolbar.pack()
-        self._pack_canvas(self.match_canvas)
-        self.match_canvas.draw()
-        self.tk_status_field.config(text=f"Plotted match {plot_kwargs['f_id_meas']} -> {plot_kwargs['f_id_lib']}.")
+        f_id_meas, f_id_lib = plot_kwargs['f_id_meas'], plot_kwargs['f_id_lib']
+        self._show_in_match_panel(fig, f"Match overview: feature {f_id_meas} -> library feature {f_id_lib}")
+        self.tk_status_field.config(text=f"Plotted match {f_id_meas} -> {f_id_lib}.")
 
-    def _destroy_match_plot(self):
-        if self.match_canvas is not None:
-            self.match_canvas.get_tk_widget().destroy()
-            self.match_canvas = None
-        if self.match_toolbar is not None:
-            self.match_toolbar.destroy()
-            self.match_toolbar = None
+    def plot_ms2_comparison(self):
+        """Mirror plot of the MS2 spectra of the two features selected by shift-click."""
+        f_id_a, f_id_b = self.compared_f_ids
+        try:
+            max_ms2_dmz_da: float = self.tk_max_dmz_ms2_mda.get() * 1e-3
+        except tk.TclError:
+            messagebox.showerror("Invalid Tolerance", "Check the MS2 fragment tolerance.")
+            return
+        if self.ms2_spectra is not None:
+            spectra = {f_id: self.ms2_spectra.get(f_id) for f_id in self.compared_f_ids}
+        else:  # still loading
+            spectra = self.meas_db.get_ms_spectra(self.compared_f_ids, level=2)
+        spectrum_a, spectrum_b = spectra.get(f_id_a), spectra.get(f_id_b)
+
+        fig = Figure(figsize=(8, 5))
+        ax = fig.add_subplot(111)
+        labels: list[str] = []
+        for f_id, spectrum, color, as_mirror in zip(
+                self.compared_f_ids, (spectrum_a, spectrum_b), COMPARISON_COLORS, (False, True)
+        ):
+            rt, mz = self._get_rt_mz(f_id)
+            labels.append(f"feature {f_id} (RT {rt:.2f} min, m/z {mz:.4f})")
+            if spectrum is None:
+                ax.text(0.5, 0.25 if as_mirror else 0.75, f"no MS2 spectrum for feature {f_id}",
+                        transform=ax.transAxes, ha="center", color=color)
+                continue
+            spectrum.plot(ax=ax, as_mirror=as_mirror, normalize_intensities=True,
+                          annotation_relative_cutoff=0.1, linefmt=color)
+
+        if spectrum_a is not None and spectrum_b is not None:
+            score, n_hits = cosine_similarity_sym(spectrum_a, spectrum_b, max_ms2_dmz_da, return_nhits=True)
+            ax.set_title(f"Symmetric cosine similarity: {score:.3f} ({n_hits} peaks matched)")
+        ax.axhline(0, color="black", linewidth=0.5)
+        ax.set_xlabel("m/z")
+        ax.set_ylabel("Relative intensity")
+        ax.legend(handles=[Line2D([], [], color=color, label=label) for color, label in zip(COMPARISON_COLORS, labels)],
+                  loc="upper left")
+        fig.tight_layout()
+
+        # replaces a match overview that may still be built in the worker
+        self.match_panel_request += 1
+        self.pending_match_plot = None
+        self._show_in_match_panel(fig, f"MS2 comparison: feature {f_id_a} vs {f_id_b}")
 
     # ------------------------------------------------------------------------------------------------------------------
     # Scatter plot
@@ -728,6 +1005,7 @@ class AnnotationGUI:
         self.scatter_ax = None
         self.filtered_features_marker = None
         self.selected_feature_marker = None
+        self.compared_features_markers = []
 
     def draw_scatter_plot(self):
         """(Re)draw the scatter plot of the measurement including annotations, highlights and markers."""
@@ -738,7 +1016,7 @@ class AnnotationGUI:
         try:
             self.meas_db.plot_scatter(
                 add_annotations=self.tk_show_annotations.get(),
-                highlight_features=self.neutral_loss_f_ids,
+                highlight_features=self.highlighted_f_ids,
                 ax=self.scatter_ax
             )
         except Exception as error:
@@ -759,6 +1037,7 @@ class AnnotationGUI:
         self.mark_filtered_features()
         if (match := self._get_selected_match()) is not None:
             self.mark_selected_feature(int(match.feature_id_meas))
+        self.mark_compared_features()
         self.scatter_canvas.draw()
 
     def redraw_scatter_plot(self):
@@ -766,23 +1045,57 @@ class AnnotationGUI:
         if self.scatter_ax is not None:
             self.draw_scatter_plot()
 
-    def on_click_highlight_nh3_loss(self):
-        """Highlight features whose MS2 spectrum contains a neutral loss of NH3."""
+    def on_click_highlight(self):
+        """
+        Highlight features whose MS2 spectrum contains the entered fragments and neutral losses.
+
+        Peaks are matched with the MS2 fragment tolerance. With "all", a feature needs every entered
+        fragment and loss, with "any" one of them is enough. Empty fields remove the highlight.
+        """
         if self.meas_db is None:
             messagebox.showerror("Error", "Please load a measured database first.")
             return
         try:
-            self.neutral_loss_f_ids = self.meas_db.filter_by_neutral_loss(
-                neutral_loss=CompoundDict('NH3').mass, mz_tol_da=5e-3
+            fragments = parse_masses(self.tk_fragments_entry.get())
+            losses = parse_masses(self.tk_losses_entry.get())
+            mz_tol_da: float = self.tk_max_dmz_ms2_mda.get() * 1e-3
+        except ValueError as error:
+            messagebox.showerror("Invalid input", str(error))
+            return
+        except tk.TclError:
+            messagebox.showerror("Invalid Tolerance", "Check the MS2 fragment tolerance.")
+            return
+        if not (fragments or losses):
+            self.on_click_remove_highlight()
+            return
+
+        try:
+            f_id_sets: list[set[int]] = (
+                    [set(self.meas_db.filter_by_fragment_mz(mass, mz_tol_da)) for _, mass in fragments]
+                    + [set(self.meas_db.filter_by_neutral_loss(mass, mz_tol_da)) for _, mass in losses]
             )
         except Exception as error:
-            messagebox.showerror("Error", f"Could not apply neutral loss filter:\n{error}")
+            messagebox.showerror("Error", f"Could not search for fragments and losses:\n{error}")
             return
+        mode: str = self.tk_highlight_mode.get()
+        combined = set.intersection(*f_id_sets) if mode == "all" else set.union(*f_id_sets)
+        self.highlighted_f_ids = sorted(combined)
         self.draw_scatter_plot()
-        self.tk_status_field.config(text=f"Highlighted {len(self.neutral_loss_f_ids)} features with NH3 loss.")
+
+        def describe(entries: list[tuple[str, float]]) -> str:
+            return ", ".join(entry if entry == f"{mass:g}" else f"{entry} ({mass:.4f})"
+                             for entry, mass in entries)
+
+        searched = "; ".join(part for part in (
+            f"fragments {describe(fragments)}" if fragments else "",
+            f"losses {describe(losses)}" if losses else "",
+        ) if part)
+        self.tk_status_field.config(
+            text=f"Highlighted {len(self.highlighted_f_ids)} features with {mode} of {searched}."
+        )
 
     def on_click_remove_highlight(self):
-        self.neutral_loss_f_ids = None
+        self.highlighted_f_ids = None
         self.redraw_scatter_plot()
 
     def mark_filtered_features(self):
@@ -803,8 +1116,7 @@ class AnnotationGUI:
                     rts, mzs, s=120, facecolors='none', edgecolors='black', linewidths=2, zorder=10,
                     label='Library match'
                 )
-                self.scatter_ax.legend(loc='upper right')
-        self.scatter_canvas.draw_idle()
+        self._update_scatter_legend()
 
     def mark_selected_feature(self, f_id_meas: int):
         """Circle the given feature in red."""
@@ -817,39 +1129,212 @@ class AnnotationGUI:
         self.selected_feature_marker = self.scatter_ax.scatter(
             [rt], [mz], s=300, facecolors="none", edgecolors="red", linewidths=2, zorder=10, label='Selected feature'
         )
-        self.scatter_ax.legend(loc='upper right')
+        self._update_scatter_legend()
+
+    def mark_compared_features(self):
+        """Put squares around the features selected by shift-click."""
+        if self.scatter_ax is None:
+            return
+        for artist in self.compared_features_markers:
+            artist.remove()
+        self.compared_features_markers = []
+
+        for f_id, color in zip(self.compared_f_ids, COMPARISON_COLORS):
+            if (point := self._get_rt_mz(f_id)) is None:
+                continue
+            self.compared_features_markers.append(self.scatter_ax.scatter(
+                [point[0]], [point[1]], s=200, marker="s", facecolors="none", edgecolors=color, linewidths=2,
+                zorder=11, label=f"Compared feature {f_id}"
+            ))
+        self._update_scatter_legend()
+
+    def _update_scatter_legend(self):
+        # only the markers have labels, so the legend lists exactly the markers that are shown
+        if self.scatter_ax.get_legend_handles_labels()[0]:
+            self.scatter_ax.legend(loc='upper right')
+        elif (legend := self.scatter_ax.get_legend()) is not None:
+            legend.remove()
         self.scatter_canvas.draw_idle()
 
-    def on_click_scatter(self, event):
-        """Filter the table to the feature closest to the click (only highlighted features if there are any)."""
-        # ignore clicks outside the axes or while zooming / panning with the toolbar
-        if event.inaxes is not self.scatter_ax or self.scatter_toolbar.mode:
-            return
+    def _find_closest_feature(self, x: float, y: float) -> int | None:
+        """
+        Feature closest to a point of the scatter plot (only highlighted features if there are any).
 
-        candidate_f_ids = self.neutral_loss_f_ids if self.neutral_loss_f_ids else self.meas_db.feature_ids
+        RT and m/z have different scales, so the distance is measured relative to the visible axis range.
+        """
+        candidate_f_ids = self.highlighted_f_ids if self.highlighted_f_ids else self.meas_db.feature_ids
         points = {f_id: p for f_id in candidate_f_ids if (p := self._get_rt_mz(f_id)) is not None}
         if not points:
-            return
+            return None
         f_ids = np.array(list(points.keys()))
         rts, mzs = np.array(list(points.values())).T
 
-        # RT and m/z have different scales, so measure distance relative to the visible axis range
         x_min, x_max = self.scatter_ax.get_xlim()
         y_min, y_max = self.scatter_ax.get_ylim()
-        distances = ((rts - event.xdata) / (x_max - x_min)) ** 2 + ((mzs - event.ydata) / (y_max - y_min)) ** 2
-        closest_f_id = int(f_ids[np.argmin(distances)])
+        distances = ((rts - x) / (x_max - x_min)) ** 2 + ((mzs - y) / (y_max - y_min)) ** 2
+        return int(f_ids[np.argmin(distances)])
+
+    def on_click_scatter(self, event):
+        """
+        Click: filter the table to the closest feature.
+        Shift-click: add the closest feature to the MS2 comparison (the oldest of two is replaced).
+        """
+        # ignore clicks outside the axes or while zooming / panning with the toolbar
+        if event.inaxes is not self.scatter_ax or self.scatter_toolbar.mode:
+            return
+        if (closest_f_id := self._find_closest_feature(event.xdata, event.ydata)) is None:
+            return
+        rt, mz = self._get_rt_mz(closest_f_id)
+
+        if "shift" in (getattr(event, "modifiers", None) or ()) or event.key == "shift":
+            self.add_feature_to_comparison(closest_f_id)
+            return
 
         for tk_entry in (self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas):
             tk_entry.delete(0, tk.END)
             tk_entry.insert(0, str(closest_f_id))
         self.apply_filters(show_empty_message=False)
         self.mark_selected_feature(closest_f_id)
-
-        rt, mz = points[closest_f_id]
         self.tk_status_field.config(
             text=f"Selected feature {closest_f_id} (RT {rt:.2f} min, m/z {mz:.4f}) "
                  f"with {len(self.filtered_matches_table)} matches."
         )
+
+    def add_feature_to_comparison(self, f_id: int):
+        """Add a feature to the MS2 comparison, once there are two, their spectra are plotted."""
+        if f_id in self.compared_f_ids:
+            self.tk_status_field.config(text=f"Feature {f_id} is already compared.")
+            return
+        self.compared_f_ids = (self.compared_f_ids + [f_id])[-2:]
+        self.mark_compared_features()
+        if len(self.compared_f_ids) < 2:
+            self.tk_status_field.config(text=f"Feature {f_id} selected, shift-click a second feature to compare.")
+            return
+        self.plot_ms2_comparison()
+        self.tk_status_field.config(
+            text=f"Comparing MS2 spectra of features {self.compared_f_ids[0]} and {self.compared_f_ids[1]}."
+        )
+
+
+class AnnotationManagerWindow(tk.Toplevel):
+    """
+    Window to review manual annotations before writing them to the measured database.
+
+    Lists new annotations (added with "Add annotation") and the ones already in the database.
+    Each can be kept or discarded; "Write to database" adds the kept new ones and removes the
+    discarded ones from the database. The state lives in the AnnotationGUI, so closing this
+    window doesn't lose any changes.
+    """
+
+    def __init__(self, gui: AnnotationGUI):
+        super().__init__(gui.tk_root)
+        self.gui: AnnotationGUI = gui
+        self.title("Manual annotations")
+        self.geometry("900x500")
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        ttk.Label(
+            self,
+            text="Double-click a row or press Space to keep / discard it. \"Write to database\" adds the kept new "
+                 "annotations and removes the discarded ones from the database.",
+            wraplength=860, padding=(10, 10, 10, 5)
+        ).pack(fill="x")
+
+        tk_table_frame = ttk.Frame(self, padding=(10, 0))
+        tk_table_frame.pack(fill="both", expand=True)
+        columns: dict[str, tuple[str, int, str]] = {
+            "keep": ("Keep", 45, "center"),
+            "state": ("State", 90, "center"),
+            "feature_id_meas": ("Meas. ID", 70, "center"),
+            "feature_id_lib": ("Lib. ID", 70, "center"),
+            "name": ("Compound name", 250, "w"),
+            "adduct": ("Adduct", 90, "w"),
+            "ms2_score": ("MS2 score", 75, "e"),
+        }
+        self.tk_table = ttk.Treeview(tk_table_frame, columns=list(columns), show="headings", selectmode="extended")
+        for column, (heading, width, anchor) in columns.items():
+            self.tk_table.heading(column, text=heading)
+            self.tk_table.column(column, width=width, anchor=anchor, stretch=column == "name")
+        self.tk_table.tag_configure("to add", background="#CCFFCC")
+        self.tk_table.tag_configure("to remove", background="#FFCCCC")
+        self.tk_table.tag_configure("discarded", foreground="grey")
+        self.tk_table.bind("<Double-1>", self.on_double_click)
+        self.tk_table.bind("<space>", lambda event: self.gui.toggle_annotations(self._get_selected_keys()))
+
+        y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_table.yview)
+        self.tk_table.configure(yscrollcommand=y_scroll.set)
+        self.tk_table.pack(side="left", fill="both", expand=True)
+        y_scroll.pack(side="left", fill="y")
+
+        tk_buttons = ttk.Frame(self, padding=10)
+        tk_buttons.pack(fill="x")
+        ttk.Button(tk_buttons, text="Keep selected",
+                   command=lambda: self.gui.toggle_annotations(self._get_selected_keys(), keep=True)).pack(side="left")
+        ttk.Button(tk_buttons, text="Discard selected",
+                   command=lambda: self.gui.toggle_annotations(self._get_selected_keys(), keep=False)).pack(
+            side="left", padx=5)
+        ttk.Button(tk_buttons, text="Keep all",
+                   command=lambda: self.gui.toggle_annotations(self._get_all_keys(), keep=True)).pack(side="left")
+        ttk.Button(tk_buttons, text="Discard all",
+                   command=lambda: self.gui.toggle_annotations(self._get_all_keys(), keep=False)).pack(
+            side="left", padx=5)
+        ttk.Button(tk_buttons, text="Close", command=self.on_close).pack(side="right")
+        ttk.Button(tk_buttons, text="Write to database",
+                   command=lambda: self.gui.write_annotations_to_db(parent=self)).pack(side="right", padx=5)
+
+        self.refresh()
+
+    @staticmethod
+    def _key_to_iid(key: AnnotationKey) -> str:
+        return f"{key[0]}_{key[1]}"
+
+    @staticmethod
+    def _iid_to_key(iid: str) -> AnnotationKey:
+        f_id_meas, f_id_lib = iid.split("_")
+        return int(f_id_meas), int(f_id_lib)
+
+    def _get_selected_keys(self) -> list[AnnotationKey]:
+        return [self._iid_to_key(iid) for iid in self.tk_table.selection()]
+
+    def _get_all_keys(self) -> list[AnnotationKey]:
+        return [self._iid_to_key(iid) for iid in self.tk_table.get_children()]
+
+    def refresh(self):
+        """Rebuild the rows from the annotation state of the GUI, keeping selection and scroll position."""
+        selection = self.tk_table.selection()
+        y_view = self.tk_table.yview()[0]
+        self.tk_table.delete(*self.tk_table.get_children())
+
+        # new annotations first, then the ones in the database, each sorted by measured feature
+        rows = ([(key, info, False) for key, info in sorted(self.gui.pending_annotations.items())]
+                + [(key, info, True) for key, info in sorted(self.gui.saved_annotations.items())])
+        for key, info, is_saved in rows:
+            discarded: bool = key in self.gui.discarded_annotations
+            if is_saved:
+                state = "to remove" if discarded else "in database"
+            else:
+                state = "discarded" if discarded else "to add"
+            ms2_score = info.get("ms2_score")
+            self.tk_table.insert("", "end", iid=self._key_to_iid(key), tags=(state,), values=(
+                "✗" if discarded else "✓",
+                state,
+                key[0],
+                key[1],
+                info.get("name") or "",
+                info.get("adduct") or "",
+                "" if ms2_score is None or pd.isna(ms2_score) else f"{ms2_score:.3f}",
+            ))
+
+        self.tk_table.selection_set([iid for iid in selection if self.tk_table.exists(iid)])
+        self.tk_table.yview_moveto(y_view)
+
+    def on_double_click(self, event):
+        if iid := self.tk_table.identify_row(event.y):
+            self.gui.toggle_annotations([self._iid_to_key(iid)])
+
+    def on_close(self):
+        self.gui.annotation_window = None
+        self.destroy()
 
 
 if __name__ == "__main__":
