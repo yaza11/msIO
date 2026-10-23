@@ -6,8 +6,8 @@ Workflow:
        The scatter plot (m/z vs RT) of the measurement is drawn right away and the MS2
        spectra of the measurement are loaded in the background.
     2. Set the matching parameters and click "Find Matches".
-    3. Narrow down the results table with the filters (applied while typing) or by
-       clicking a feature in the scatter plot. In the scatter plot, features with specific
+    3. Narrow down the results table with the filters (applied while typing). Clicking a
+       feature in the scatter plot selects its best match in the table. In the scatter plot, features with specific
        MS2 fragments or neutral losses can be highlighted and pairs of features with
        specific mass differences (e.g. adduct exchanges) can be connected.
     4. Select a row to plot the match overview. Shift-click two features in the scatter
@@ -163,10 +163,12 @@ class AnnotationGUI:
         height: int = int(self.tk_root.winfo_screenheight() * 0.8)
         self.tk_root.geometry(f"{width}x{height}+10+10")
         self.tk_root.protocol("WM_DELETE_WINDOW", self.on_close)
+        # tk variables are created with root as master: without it they belong to the first Tk instance of the process,
+        # which is not this window if e.g. an IPython console created one before, and the entries would stay empty
 
         # database selection
-        self.tk_meas_path: tk.StringVar = tk.StringVar()
-        self.tk_lib_path: tk.StringVar = tk.StringVar()
+        self.tk_meas_path: tk.StringVar = tk.StringVar(self.tk_root)
+        self.tk_lib_path: tk.StringVar = tk.StringVar(self.tk_root)
         self.meas_db: FeatureManagerDB = None
         self.lib_db: Library = None
         # incremented for every loaded measured database, so results of workers for an older database are dropped
@@ -178,11 +180,11 @@ class AnnotationGUI:
         self.ms2_loading_error: str = None
 
         # matching parameters
-        self.tk_max_dmz_ppm: tk.DoubleVar = tk.DoubleVar(value=10)
-        self.tk_max_dmz_mda: tk.DoubleVar = tk.DoubleVar(value=3)
-        self.tk_max_dmz_ms2_mda: tk.DoubleVar = tk.DoubleVar(value=10)
-        self.tk_min_ms2_score: tk.DoubleVar = tk.DoubleVar(value=0)
-        self.tk_require_ms2: tk.BooleanVar = tk.BooleanVar(value=False)
+        self.tk_max_dmz_ppm: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=10)
+        self.tk_max_dmz_mda: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=3)
+        self.tk_max_dmz_ms2_mda: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=10)
+        self.tk_min_ms2_score: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=0)
+        self.tk_require_ms2: tk.BooleanVar = tk.BooleanVar(self.tk_root, value=False)
 
         # matching results: raw output of Library.find_matches and as table (all and filtered)
         self.matches: dict[int, list[dict]] = {}
@@ -213,8 +215,8 @@ class AnnotationGUI:
         self.scatter_canvas: FigureCanvasTkAgg = None
         self.scatter_toolbar: NavigationToolbar2Tk = None
         self.scatter_ax = None
-        self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(value=True)
-        self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(value=0.2)
+        self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(self.tk_root, value=True)
+        self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=0.2)
         self.highlighted_f_ids: list[int] = None  # features with the requested fragments / losses
         self.compared_f_ids: list[int] = []  # up to two features selected by shift-click
         self.last_clicked_f_id: int = None
@@ -351,10 +353,9 @@ class AnnotationGUI:
         self.tk_filter_min_ms2_score = add_filter(2, 1, "Min. MS2 score")
         self.tk_filter_min_n_hits_ms2 = add_filter(3, 0, "Min. #MS2 peak matches")
 
-        tk_filter_buttons = ttk.Frame(tk_filter_frame)
-        tk_filter_buttons.grid(row=3, column=4, columnspan=4, sticky="e")
-        ttk.Button(tk_filter_buttons, text="Update filters", command=self.apply_filters).pack(side="left", padx=5)
-        ttk.Button(tk_filter_buttons, text="Remove filters", command=self.on_click_remove_filters).pack(side="left")
+        ttk.Button(tk_filter_frame, text="Remove filters", command=self.on_click_remove_filters).grid(
+            row=3, column=4, columnspan=4, sticky="e"
+        )
 
         self.tk_filter_entries: list[ttk.Entry] = [
             self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas, self.tk_filter_name,
@@ -428,7 +429,7 @@ class AnnotationGUI:
 
     def _create_scatter_plot_panel(self, parent):
         tk_scatter_panel = ttk.LabelFrame(
-            parent, text="Scatter plot m/z vs RT (click: filter table, shift-click two features: compare MS2)"
+            parent, text="Scatter plot m/z vs RT (click: select in table, shift-click two features: compare MS2)"
         )
         parent.add(tk_scatter_panel, weight=2)
 
@@ -1409,7 +1410,7 @@ class AnnotationGUI:
 
     def on_click_scatter(self, event):
         """
-        Click: filter the table to the closest feature.
+        Click: select the best match of the closest feature in the results table.
         Shift-click: add the closest feature to the MS2 comparison (the oldest of two is replaced).
         """
         # ignore clicks outside the axes or while zooming / panning with the toolbar
@@ -1426,15 +1427,27 @@ class AnnotationGUI:
             self.add_feature_to_comparison(closest_f_id)
             return
 
-        for tk_entry in (self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas):
-            tk_entry.delete(0, tk.END)
-            tk_entry.insert(0, str(closest_f_id))
-        self.apply_filters(show_empty_message=False)
-        self.mark_selected_feature(closest_f_id)
-        self.tk_status_field.config(
-            text=f"Selected feature {closest_f_id} (RT {rt:.2f} min, m/z {mz:.4f}) "
-                 f"with {len(self.filtered_matches_table)} matches."
-        )
+        if not self.select_best_match_in_table(closest_f_id):
+            self.mark_selected_feature(closest_f_id)
+            self.tk_status_field.config(
+                text=f"Feature {closest_f_id} (RT {rt:.2f} min, m/z {mz:.4f}) has no matches with the current filters."
+            )
+
+    def select_best_match_in_table(self, f_id_meas: int) -> bool:
+        """
+        Select the match with the highest MS2 score of a measured feature in the results table (selecting a row
+        marks the feature and plots the match overview). Returns False if the filtered table has no match for it.
+        """
+        rows = self.filtered_matches_table.index[self.filtered_matches_table.feature_id_meas == f_id_meas]
+        if rows.empty:
+            return False
+        # matches without MS2 score come last
+        best_row = self.filtered_matches_table.loc[rows, 'ms2_score'].fillna(-np.inf).idxmax()
+        # rows of the table are in the order of filtered_matches_table (its index is reset when filtering)
+        item: str = self.tk_matches_table.get_children()[best_row]
+        self.tk_matches_table.selection_set(item)
+        self.tk_matches_table.see(item)
+        return True
 
     def add_feature_to_comparison(self, f_id: int):
         """Add a feature to the MS2 comparison, once there are two, their spectra are plotted."""
