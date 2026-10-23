@@ -1,0 +1,369 @@
+"""
+Overview figure of measured features for the annotation GUI.
+
+Three modes:
+    "match"       a measured feature and its library match (library MS2 as mirror)
+    "feature"     a single measured feature
+    "comparison"  two measured features (second MS2 as mirror)
+
+Layout: MS2 spectra on top, below the MS1 spectrum (measured and theoretical isotope pattern, peaks
+labelled with their distance to the monoisotopic peak) and the intensities in the samples, next to
+them the chemical structure.
+
+Gathering the data (database queries) and building the figure don't touch tk, so both can run in a
+worker thread. Peak annotations of the MS2 spectra can be changed by the user, the figure returns the
+plotted peaks so that clicks can be mapped to them.
+"""
+
+from dataclasses import dataclass, field
+
+import numpy as np
+from LipidCalculator import CompoundDict
+from LipidCalculator.isotopes.isotope_pattern import IsotopePattern
+from LipidCalculator.rdkit.plotting import mplt_mol
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
+from matplotlib.gridspec import GridSpec
+from matplotlib.lines import Line2D
+from rdkit import Chem
+
+from msIO import PeakList
+from msIO.feature_managers.db import FeatureManagerDB, Library
+from msIO.metrics import cosine_similarity_sym
+
+# identifies a spectrum for user defined peak annotations: ("meas" | "lib", feature id)
+SpectrumKey = tuple[str, int]
+
+# peaks within this distance of the precursor m/z are hidden by the isotope filter
+ISOTOPE_WINDOW_DA: float = 4.
+# measured MS1 peaks are shown from precursor m/z - MS1_WINDOW_DA[0] to + MS1_WINDOW_DA[1]
+MS1_WINDOW_DA: tuple[float, float] = (1.5, 5.5)
+# MS1 peaks below this relative intensity are not labelled with their distance to the monoisotopic peak
+MS1_LABEL_CUTOFF: float = 0.01
+# known distances to the monoisotopic peak, used to label MS1 peaks
+_C13: float = (CompoundDict('C[13]') - CompoundDict('C')).mass
+KNOWN_ISOTOPE_DISTANCES: dict[str, float] = {
+    '13C': _C13,
+    '2x13C': 2 * _C13,
+    '34S': (CompoundDict('S[34]') - CompoundDict('S')).mass,
+    '18O': (CompoundDict('O[18]') - CompoundDict('O')).mass,
+    '13C, z=2': _C13 / 2,
+}
+KNOWN_DISTANCE_TOLERANCE_DA: float = 2e-3
+
+FEATURE_COLORS: tuple[str, str] = ("C2", "C1")  # same as the compared features in the scatter plot
+LIBRARY_COLOR: str = "C3"
+THEORETICAL_COLOR: str = "C7"
+
+
+@dataclass
+class FeatureData:
+    """Properties and spectra of a measured feature."""
+    f_id: int
+    mz: float
+    rt_min: float | None
+    ccs: float | None
+    ms1: PeakList | None
+    ms2: PeakList | None
+    intensities: dict[str, float]
+    # manual annotation of the feature, if any (name, formula, adduct, smiles)
+    annotation: dict | None = None
+
+
+@dataclass
+class LibraryData:
+    f_id: int
+    name: str | None
+    formula: str | None
+    adduct: str | None
+    smiles: str | None
+    mz: float | None
+    ccs: float | None
+    ms2: PeakList | None
+
+
+@dataclass
+class OverviewData:
+    mode: str
+    features: list[FeatureData]
+    library: LibraryData | None = None
+    match_result: dict | None = None
+
+
+@dataclass
+class OverviewSettings:
+    hide_isotope_peaks: bool = False
+    annotation_cutoff: float = 0.3
+    ms2_tolerance_da: float = 0.01
+    # mass accuracy of the theoretical isotope pattern
+    ms1_tolerance_da: float = 0.003
+    peak_annotations: dict[SpectrumKey, dict[float, str]] = field(default_factory=dict)
+
+
+@dataclass
+class PlottedSpectrum:
+    """Peaks of a spectrum as plotted (signed relative intensities), to find the peak under a click."""
+    key: SpectrumKey
+    ax: Axes
+    mzs: np.ndarray
+    heights: np.ndarray
+
+
+def peak_key(mz: float) -> float:
+    """Peaks are identified by their m/z rounded to 4 decimals for user defined annotations."""
+    return round(float(mz), 4)
+
+
+def gather_feature(
+        meas_db: FeatureManagerDB,
+        f_id: int,
+        ms2_spectra: dict | None = None,
+        annotation: dict | None = None
+) -> FeatureData:
+    rt = meas_db.retention_times_in_seconds.get(f_id)
+    ccs = meas_db.collisional_cross_sections.get(f_id)
+    ms2 = ms2_spectra.get(f_id) if ms2_spectra is not None else meas_db.get_ms_spectrum(f_id, level=2)
+    return FeatureData(
+        f_id=f_id,
+        mz=meas_db.mzs[f_id],
+        rt_min=None if rt is None else rt / 60,
+        ccs=ccs if ccs is not None and ccs > 0 else None,
+        ms1=meas_db.get_ms_spectrum(f_id, level=1),
+        ms2=ms2,
+        intensities=meas_db.get_intensities(f_id),
+        annotation=annotation,
+    )
+
+
+def gather_library(lib_db: Library, f_id: int) -> LibraryData:
+    props: dict = lib_db.get_values_for_feature(f_id)
+    ccs = props.get('CCS')
+    return LibraryData(
+        f_id=f_id,
+        name=props.get('name_sirius'),
+        formula=props.get('formula_metaboscape'),
+        adduct=props.get('adduct_metaboscape'),
+        smiles=props.get('smiles'),
+        mz=props.get('mz_meas'),
+        ccs=ccs if ccs is not None and ccs > 0 else None,
+        ms2=lib_db.get_ms_spectrum(f_id, level=2),
+    )
+
+
+def _filter_isotope_peaks(mzs: np.ndarray, intensities: np.ndarray, precursor_mz: float | None, hide: bool):
+    if not hide or precursor_mz is None:
+        return mzs, intensities
+    keep = np.abs(mzs - precursor_mz) > ISOTOPE_WINDOW_DA
+    return mzs[keep], intensities[keep]
+
+
+def _plot_ms2(
+        ax: Axes,
+        spectrum: PeakList | None,
+        key: SpectrumKey,
+        precursor_mz: float | None,
+        color: str,
+        as_mirror: bool,
+        settings: OverviewSettings
+) -> PlottedSpectrum | None:
+    """Stem plot normalized to 1 (negative for mirror), peaks above the cutoff or with an annotation are labelled."""
+    if spectrum is None or len(spectrum.mzs) == 0:
+        ax.text(0.5, 0.25 if as_mirror else 0.75, f"no MS2 spectrum for {'library ' if key[0] == 'lib' else ''}"
+                f"feature {key[1]}", transform=ax.transAxes, ha="center", color=color)
+        return None
+    mzs, intensities = _filter_isotope_peaks(
+        np.asarray(spectrum.mzs, dtype=float), np.asarray(spectrum.intensities, dtype=float), precursor_mz,
+        settings.hide_isotope_peaks
+    )
+    if len(mzs) == 0:
+        return None
+    heights = intensities / intensities.max() * (-1 if as_mirror else 1)
+    ax.vlines(mzs, 0, heights, colors=color, linewidth=1)
+
+    user_annotations: dict[float, str] = settings.peak_annotations.get(key, {})
+    for mz, height in zip(mzs, heights):
+        label = user_annotations.get(peak_key(mz))
+        if label is None:
+            if abs(height) < settings.annotation_cutoff:
+                continue
+            label = f"{mz:.4f}"
+        ax.annotate(label, xy=(mz, height), ha="center", va="top" if as_mirror else "bottom", rotation=90,
+                    fontsize=7, color="black" if peak_key(mz) in user_annotations else "dimgray")
+    return PlottedSpectrum(key=key, ax=ax, mzs=mzs, heights=heights)
+
+
+def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
+    """
+    Measured MS1 spectra (and the theoretical isotope pattern if formula and adduct are known), all pointing up and
+    normalized to 1. Measured peaks are labelled with their distance to the monoisotopic peak. Two compared features
+    are shifted to their precursor m/z.
+    """
+    relative: bool = data.mode == "comparison"
+    formula, adduct = _get_formula_adduct(data)
+    handles: list = []
+    for feature, color in zip(data.features, FEATURE_COLORS):
+        if feature.ms1 is None or len(feature.ms1.mzs) == 0:
+            continue
+        mzs, intensities = np.asarray(feature.ms1.mzs, dtype=float), np.asarray(feature.ms1.intensities, dtype=float)
+        in_window = (mzs > feature.mz - MS1_WINDOW_DA[0]) & (mzs < feature.mz + MS1_WINDOW_DA[1])
+        mzs, intensities = mzs[in_window], intensities[in_window]
+        if len(mzs) == 0:
+            continue
+        heights = intensities / intensities.max()
+        offset = feature.mz if relative else 0.
+        ax.vlines(mzs - offset, 0, heights, colors=color, linewidth=2)
+        handles.append(Line2D([], [], color=color, label=f"feature {feature.f_id}"))
+
+        # monoisotopic peak: closest to the precursor m/z
+        mz_mono = mzs[np.argmin(np.abs(mzs - feature.mz))]
+        for mz, height in zip(mzs, heights):
+            if height < MS1_LABEL_CUTOFF or mz == mz_mono:
+                continue
+            distance = mz - mz_mono
+            known = [name for name, d in KNOWN_ISOTOPE_DISTANCES.items()
+                     if abs(distance - d) <= KNOWN_DISTANCE_TOLERANCE_DA]
+            label = f"{distance:+.4f}" + (f" ({', '.join(known)})" if known else "")
+            ax.annotate(label, xy=(mz - offset, height), ha="center", va="bottom", rotation=90, fontsize=7,
+                        color=color)
+
+    window = (data.features[0].mz - MS1_WINDOW_DA[0], data.features[0].mz + MS1_WINDOW_DA[1])
+    if formula and adduct and not relative:
+        try:
+            pattern = IsotopePattern.from_formula(formula=formula, adduct=adduct, mass_accuracy=settings.ms1_tolerance_da,
+                                                  merge_method='weighted_average')
+            masses, intensities = np.asarray(pattern.masses), np.asarray(pattern.intensities)
+            # a bit narrower and dashed, so that the measured peaks stay visible below
+            ax.vlines(masses, 0, intensities / intensities.max(), colors=THEORETICAL_COLOR, linewidth=1,
+                      linestyles="dashed")
+            handles.append(Line2D([], [], color=THEORETICAL_COLOR, linestyle="dashed",
+                                  label=f"theoretical {formula} {adduct}"))
+            if not window[0] < masses[np.argmax(intensities)] < window[1]:
+                ax.text(0.02, 0.95, f"theoretical pattern at m/z {masses[np.argmax(intensities)]:.4f} (outside)",
+                        transform=ax.transAxes, fontsize=7, va="top")
+        except Exception as error:
+            ax.text(0.02, 0.95, f"no theoretical pattern: {error}", transform=ax.transAxes, fontsize=7, va="top")
+    if not relative:  # keep the measured peaks in view
+        ax.set_xlim(*window)
+
+    if not handles:
+        ax.text(0.5, 0.5, "no MS1 spectrum", transform=ax.transAxes, ha="center")
+    else:
+        ax.legend(handles=handles, loc="upper right", fontsize=7)
+    ax.set_ylim(0, 1.45)  # room for the labels
+    ax.set_xlabel("m/z - precursor m/z" if relative else "m/z")
+    ax.set_ylabel("Relative intensity")
+    ax.set_title("MS1", fontsize=9)
+
+
+def _plot_intensities(ax: Axes, data: OverviewData):
+    """Grouped bar plot of the intensities of the measured features in each sample."""
+    samples: list[str] = sorted({sample for feature in data.features for sample in feature.intensities})
+    if not samples:
+        ax.text(0.5, 0.5, "no intensities", transform=ax.transAxes, ha="center")
+        return
+    width: float = 0.8 / len(data.features)
+    positions = np.arange(len(samples))
+    for i, (feature, color) in enumerate(zip(data.features, FEATURE_COLORS)):
+        values = [feature.intensities.get(sample) or 0 for sample in samples]
+        ax.bar(positions + (i - (len(data.features) - 1) / 2) * width, values, width=width, color=color,
+               label=f"feature {feature.f_id}")
+    ax.set_xticks(positions, [s if len(s) <= 25 else s[:22] + "..." for s in samples], rotation=90, fontsize=6)
+    ax.set_ylabel("Intensity")
+    ax.set_title("Intensities in samples", fontsize=9)
+    if len(data.features) > 1:
+        ax.legend(fontsize=7)
+
+
+def _get_formula_adduct(data: OverviewData) -> tuple[str | None, str | None]:
+    """Formula and adduct for the theoretical isotope pattern: library match, else manual annotation."""
+    if data.library is not None:
+        return data.library.formula, data.library.adduct
+    annotation = data.features[0].annotation if data.features else None
+    if annotation:
+        return annotation.get('formula'), annotation.get('adduct')
+    return None, None
+
+
+def _plot_structure(ax: Axes, data: OverviewData):
+    """Structure of the library match or of the manual annotation of the (first) feature, with a short summary."""
+    ax.axis("off")
+    if data.library is not None:
+        smiles, name = data.library.smiles, data.library.name
+    elif data.features and data.features[0].annotation:
+        smiles, name = data.features[0].annotation.get('smiles'), data.features[0].annotation.get('name')
+    else:
+        smiles, name = None, None
+
+    mol = Chem.MolFromSmiles(smiles) if smiles else None
+    if mol is not None:
+        mplt_mol(mol=mol, ax=ax)
+    else:
+        ax.text(0.5, 0.6, "no structure", transform=ax.transAxes, ha="center", color="gray")
+
+    lines: list[str] = []
+    if name:
+        lines.append(name)
+    for feature in data.features:
+        parts = [f"feature {feature.f_id}: m/z {feature.mz:.4f}"]
+        if feature.rt_min is not None:
+            parts.append(f"RT {feature.rt_min:.2f} min")
+        if feature.ccs is not None:
+            parts.append(f"CCS {feature.ccs:.1f} Å²")
+        lines.append(", ".join(parts))
+        if feature.annotation and data.mode != "match":
+            lines.append(f"  annotated: {feature.annotation.get('name')} {feature.annotation.get('adduct') or ''}")
+    if (lib := data.library) is not None:
+        lines.append(f"library {lib.f_id}: {lib.formula or ''} {lib.adduct or ''}"
+                     + (f", m/z {lib.mz:.4f}" if lib.mz is not None else ""))
+        if lib.ccs is not None and data.features[0].ccs is not None:
+            lines.append(f"CCS lib. {lib.ccs:.1f} Å² (Δ {(data.features[0].ccs - lib.ccs) / lib.ccs * 100:+.1f} %)")
+    ax.text(0.5, 0.0, "\n".join(lines), transform=ax.transAxes, ha="center", va="top", fontsize=8, wrap=True)
+
+
+def build_overview_figure(fig: Figure, data: OverviewData, settings: OverviewSettings) -> list[PlottedSpectrum]:
+    """Draw the overview into fig, returns the plotted MS2 spectra (for clickable peaks)."""
+    # the bottom margin leaves room for the sample names of the intensity plot
+    gs = GridSpec(3, 2, figure=fig, width_ratios=[2, 1], height_ratios=[1.3, 1, 1], hspace=0.6, wspace=0.15,
+                  left=0.07, right=0.98, top=0.95, bottom=0.17)
+    ax_ms2 = fig.add_subplot(gs[0, :])
+    ax_ms1 = fig.add_subplot(gs[1, 0])
+    ax_intensities = fig.add_subplot(gs[2, 0])
+    ax_structure = fig.add_subplot(gs[1:, 1])
+
+    # MS2: first feature on top, library match or second feature as mirror
+    first = data.features[0]
+    spectra: list[PlottedSpectrum | None] = [
+        _plot_ms2(ax_ms2, first.ms2, ("meas", first.f_id), first.mz, FEATURE_COLORS[0], False, settings)
+    ]
+    legend: list[Line2D] = [Line2D([], [], color=FEATURE_COLORS[0], label=f"feature {first.f_id}")]
+    mirror: PeakList | None = None
+    if data.mode == "match" and data.library is not None:
+        lib = data.library
+        mirror = lib.ms2
+        spectra.append(_plot_ms2(ax_ms2, lib.ms2, ("lib", lib.f_id), lib.mz, LIBRARY_COLOR, True, settings))
+        legend.append(Line2D([], [], color=LIBRARY_COLOR, label=f"library {lib.f_id}: {lib.name}"))
+        result = data.match_result or {}
+        score = result.get('ms2_score')
+        ax_ms2.set_title(f"MS2 score: {score:.3f} ({result.get('n_hits_ms2')} peaks matched)"
+                         if score is not None and not np.isnan(score) else "MS2 (no score)", fontsize=10)
+    elif data.mode == "comparison" and len(data.features) > 1:
+        second = data.features[1]
+        mirror = second.ms2
+        spectra.append(_plot_ms2(ax_ms2, second.ms2, ("meas", second.f_id), second.mz, FEATURE_COLORS[1], True,
+                                 settings))
+        legend.append(Line2D([], [], color=FEATURE_COLORS[1], label=f"feature {second.f_id}"))
+        if first.ms2 is not None and second.ms2 is not None:
+            score, n_hits = cosine_similarity_sym(first.ms2, second.ms2, settings.ms2_tolerance_da, return_nhits=True)
+            ax_ms2.set_title(f"Symmetric cosine similarity: {score:.3f} ({n_hits} peaks matched)", fontsize=10)
+    else:
+        ax_ms2.set_title(f"MS2 of feature {first.f_id}", fontsize=10)
+    ax_ms2.axhline(0, color="black", linewidth=0.5)
+    ax_ms2.set_ylim(-1.35 if mirror is not None else 0, 1.35)
+    ax_ms2.set_xlabel("m/z")
+    ax_ms2.set_ylabel("Relative intensity")
+    ax_ms2.legend(handles=legend, loc="upper left", fontsize=8)
+
+    _plot_ms1(ax_ms1, data, settings)
+    _plot_intensities(ax_intensities, data)
+    _plot_structure(ax_structure, data)
+    return [spectrum for spectrum in spectra if spectrum is not None]

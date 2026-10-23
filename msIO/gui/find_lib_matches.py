@@ -10,8 +10,10 @@ Workflow:
        feature in the scatter plot selects its best match in the table. In the scatter plot, features with specific
        MS2 fragments or neutral losses can be highlighted and pairs of features with
        specific mass differences (e.g. adduct exchanges) can be connected.
-    4. Select a row to plot the match overview. Shift-click two features in the scatter
-       plot to compare their MS2 spectra instead.
+    4. The overview panel shows the selected match (table row), a single feature (click in
+       the scatter plot or feature ID field) or two compared features (shift-click two
+       features or enter two IDs): MS2 spectra (peaks can be annotated by clicking them),
+       MS1 spectrum, intensities in the samples and the structure (see feature_overview).
     5. Collect annotations in a local list: library matches ("Add library match"),
        compounds entered by hand or built with the LipidCalculator IPL builder ("Add manual
        annotation") and in-source fragments of other features ("Mark in-source fragment").
@@ -25,19 +27,23 @@ main thread with ``tk_root.after``.
 
 import numpy as np
 import pandas as pd
+import re
 import threading
 import tkinter as tk
-from tkinter import messagebox, filedialog, ttk
+from tkinter import messagebox, filedialog, simpledialog, ttk
 from typing import Callable
 
 from LipidCalculator import Adduct, CompoundDict
+from LipidCalculator.compound_creation.formula_parser import parse_equation
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
-from matplotlib.lines import Line2D
 
 from msIO.feature_managers.db import Library, FeatureManagerDB, lib_match_result_to_table
-from msIO.metrics import cosine_similarity_sym
+from msIO.gui.feature_overview import (
+    OverviewData, OverviewSettings, PlottedSpectrum, SpectrumKey, build_overview_figure, gather_feature,
+    gather_library, peak_key
+)
 
 try:
     from LipidCalculator.gui.common import ADDUCTS
@@ -92,9 +98,9 @@ def parse_mass_differences(text: str) -> list[tuple[str, Callable[[np.ndarray], 
     Parse ";"-separated mass differences into (entry, function) pairs. The function maps m/z values
     of features to the m/z values of their expected partners.
 
-    An entry is a mass difference (number or formula, see parse_masses) or an adduct exchange like
-    "[M+H]+>[M+NH4]+" (the partner of an [M+H]+ ion is the [M+NH4]+ ion of the same molecule, this
-    also works for different charge states).
+    An entry is a mass difference (number, formula or equation like "C[13] - C[12]" or "H2O + NH3", see
+    LipidCalculator's parse_equation) or an adduct exchange like "[M+H]+>[M+NH4]+" (the partner of an
+    [M+H]+ ion is the [M+NH4]+ ion of the same molecule, this also works for different charge states).
 
     Raises:
         ValueError: if an entry can't be parsed.
@@ -112,7 +118,15 @@ def parse_mass_differences(text: str) -> list[tuple[str, Callable[[np.ndarray], 
                 [b.mass_to_mz(a.mz_to_mass(mz)) for mz in mzs]
             )))
         else:
-            ((_, mass),) = parse_masses(entry)
+            try:
+                mass = float(entry)
+            except ValueError:
+                try:
+                    mass = parse_equation(entry).mass
+                except Exception:
+                    raise ValueError(f'"{entry}" is neither a number, a formula nor an equation like C[13] - C[12].')
+            if mass == 0:
+                raise ValueError(f'"{entry}" has no mass difference.')
             differences.append((entry, lambda mzs, d=mass: mzs + d))
     return differences
 
@@ -190,6 +204,9 @@ class AnnotationGUI:
         self.matches: dict[int, list[dict]] = {}
         self.matches_table: pd.DataFrame = pd.DataFrame()
         self.filtered_matches_table: pd.DataFrame = pd.DataFrame()
+        # sorting of the results table (clicked column header), kept when the filters change
+        self.sort_column: str = None
+        self.sort_descending: bool = False
 
         # filters are applied while typing, after a short pause
         self.live_filter_delay_ms: int = 300
@@ -202,14 +219,25 @@ class AnnotationGUI:
         self.discarded_annotations: set[AnnotationKey] = set()  # pending ones not to add, saved ones to remove
         self.annotation_window: AnnotationManagerWindow = None
 
-        # match overview panel, shows either the match overview (built in a worker thread) or an MS2 comparison
+        # overview panel: a library match, a single feature or two compared features (built in a worker thread)
         self.match_canvas: FigureCanvasTkAgg = None
         self.match_toolbar: NavigationToolbar2Tk = None
-        self.match_plot_running: bool = False
-        # latest match overview request: (request number, kwargs for Library.plot_match)
-        self.pending_match_plot: tuple[int, dict] = None
-        # incremented for every new content of the panel, so a slow match overview can't replace newer content
+        self.overview_running: bool = False
+        # latest request: (request number, key, match result, feature annotations, data to reuse, settings)
+        self.pending_overview: tuple = None
+        # incremented for every new content of the panel, so a slow overview can't replace newer content
         self.match_panel_request: int = 0
+        # (mode, feature ids, library feature id) of the overview in the panel, requesting it again doesn't replot it
+        self.shown_overview: tuple = None
+        self.overview_data: OverviewData = None  # data of the shown overview, reused when only settings change
+        self.overview_spectra: list[PlottedSpectrum] = None  # plotted MS2 spectra, for clicks on peaks
+        self.tk_hide_isotope_peaks: tk.BooleanVar = tk.BooleanVar(self.tk_root, value=False)
+        self.tk_annotation_cutoff: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=0.3)
+        self.annotation_cutoff_job: str = None
+        # user defined annotations of MS2 peaks: {("meas" | "lib", feature id): {m/z (4 decimals): annotation}}
+        self.peak_annotations: dict[SpectrumKey, dict[float, str]] = {}
+        # set when a scatter click selects a row, so the selection doesn't replace the feature overview
+        self.ignore_next_table_select: bool = False
 
         # scatter plot (m/z vs RT) of the measurement
         self.scatter_canvas: FigureCanvasTkAgg = None
@@ -217,6 +245,10 @@ class AnnotationGUI:
         self.scatter_ax = None
         self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(self.tk_root, value=True)
         self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=0.2)
+        # MS2 peaks below this intensity are ignored when searching fragments and losses
+        self.tk_min_peak_intensity: tk.DoubleVar = tk.DoubleVar(self.tk_root, value=100)
+        # zoom factor of + and - over the scatter plot
+        self.scatter_zoom_factor: float = 1.5
         self.highlighted_f_ids: list[int] = None  # features with the requested fragments / losses
         self.compared_f_ids: list[int] = []  # up to two features selected by shift-click
         self.last_clicked_f_id: int = None
@@ -352,15 +384,18 @@ class AnnotationGUI:
         self.tk_filter_name = add_filter(2, 0, "Name contains (a; b)")
         self.tk_filter_min_ms2_score = add_filter(2, 1, "Min. MS2 score")
         self.tk_filter_min_n_hits_ms2 = add_filter(3, 0, "Min. #MS2 peak matches")
+        self.tk_filter_min_ccs, self.tk_filter_max_ccs = add_range_filter(3, 1, "CCS (Å²)")
+        self.tk_filter_min_intensity, self.tk_filter_max_intensity = add_range_filter(4, 0, "Σ intensity")
 
         ttk.Button(tk_filter_frame, text="Remove filters", command=self.on_click_remove_filters).grid(
-            row=3, column=4, columnspan=4, sticky="e"
+            row=4, column=4, columnspan=4, sticky="e"
         )
 
         self.tk_filter_entries: list[ttk.Entry] = [
             self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas, self.tk_filter_name,
             self.tk_filter_min_rt, self.tk_filter_max_rt, self.tk_filter_subformula,
-            self.tk_filter_min_ms2_score, self.tk_filter_min_n_hits_ms2, self.tk_filter_min_mz, self.tk_filter_max_mz
+            self.tk_filter_min_ms2_score, self.tk_filter_min_n_hits_ms2, self.tk_filter_min_mz, self.tk_filter_max_mz,
+            self.tk_filter_min_ccs, self.tk_filter_max_ccs, self.tk_filter_min_intensity, self.tk_filter_max_intensity
         ]
         for tk_entry in self.tk_filter_entries:
             tk_entry.bind("<KeyRelease>", self.on_edit_filter)
@@ -373,8 +408,10 @@ class AnnotationGUI:
         # "annotation" is not in matches_table, it shows the state of the manual annotation of the match
         columns: dict[str, tuple[str, int, str]] = {
             "feature_id_meas": ("Meas. ID", 60, "center"),
-            "feature_id_lib": ("Lib. ID", 60, "center"),
-            "RT": ("RT (min)", 60, "center"),
+            "mz_meas": ("m/z", 80, "e"),
+            "RT": ("RT (min)", 60, "e"),
+            "ccs_meas": ("CCS (Å²)", 65, "e"),
+            "intensity": ("Σ intensity", 80, "e"),
             "name": ("Compound name", 180, "w"),
             "formula": ("Formula", 110, "w"),
             "adduct": ("Adduct", 80, "w"),
@@ -382,10 +419,14 @@ class AnnotationGUI:
             "n_hits_ms2": ("#MS2 peaks", 75, "e"),
             "dmz_mda": ("Δm/z (mDa)", 80, "e"),
             "dmz_ppm": ("Δm/z (ppm)", 80, "e"),
+            "dccs_percent": ("ΔCCS (%)", 70, "e"),
             "annotation": ("Annotation", 85, "center"),
             "source_library": ("Source", 150, "w"),
         }
         self.table_columns: list[str] = list(columns)
+        self.table_headings: dict[str, str] = {column: heading for column, (heading, _, _) in columns.items()}
+        # columns of matches_table shown instead (formulas that don't fit the measured m/z are in brackets)
+        self.table_display_columns: dict[str, str] = {"formula": "formula_display"}
         self.tk_matches_table: ttk.Treeview = ttk.Treeview(
             tk_table_frame,
             columns=self.table_columns,
@@ -393,9 +434,15 @@ class AnnotationGUI:
             selectmode="browse"
         )
         for column, (heading, width, anchor) in columns.items():
-            self.tk_matches_table.heading(column, text=heading)
+            self.tk_matches_table.heading(column, text=heading, command=lambda c=column: self.on_click_table_heading(c))
             self.tk_matches_table.column(column, width=width, anchor=anchor, stretch=column in ("name", "source_library"))
         self.tk_matches_table.bind("<<TreeviewSelect>>", self.on_select_table_row)
+        self.tk_matches_table.bind("<ButtonRelease-1>", self.on_release_table)
+
+        # treeview cells can't be selected, so copying works with Ctrl+C (selected row) and a context menu
+        self.tk_table_menu = tk.Menu(self.tk_matches_table, tearoff=False)
+        self.tk_matches_table.bind("<Button-3>", self.on_right_click_table)
+        self.tk_matches_table.bind("<Control-c>", lambda event: self.copy_selected_row())
 
         y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_matches_table.yview)
         x_scroll = ttk.Scrollbar(tk_table_frame, orient="horizontal", command=self.tk_matches_table.xview)
@@ -424,8 +471,29 @@ class AnnotationGUI:
                    command=self.on_click_mark_in_source_fragment).pack(side="right", padx=5)
 
     def _create_match_plot_panel(self, parent):
-        self.tk_match_plot_frame = ttk.LabelFrame(parent, text="Match overview (select a row in the table)")
+        self.tk_match_plot_frame = ttk.LabelFrame(
+            parent, text="Overview (select a match in the table or features in the scatter plot)"
+        )
         parent.add(self.tk_match_plot_frame, weight=3)
+
+        tk_controls = ttk.Frame(self.tk_match_plot_frame, padding=(5, 2))
+        tk_controls.pack(fill="x")
+        ttk.Label(tk_controls, text="Feature ID(s)").pack(side="left")
+        self.tk_feature_ids_entry = ttk.Entry(tk_controls, width=14)
+        self.tk_feature_ids_entry.pack(side="left", padx=(4, 0))
+        self.tk_feature_ids_entry.bind("<Return>", lambda event: self.on_submit_feature_ids())
+        ttk.Button(tk_controls, text="Show", command=self.on_submit_feature_ids).pack(side="left", padx=(3, 15))
+        ttk.Checkbutton(tk_controls, text="Hide precursor isotope peaks (±4 Da)", variable=self.tk_hide_isotope_peaks,
+                        command=self.redraw_overview).pack(side="left")
+        ttk.Label(tk_controls, text="Annotation cutoff").pack(side="left", padx=(15, 3))
+        ttk.Scale(tk_controls, from_=0, to=1, variable=self.tk_annotation_cutoff, length=120,
+                  command=self.on_change_annotation_cutoff).pack(side="left")
+        self.tk_annotation_cutoff_label = ttk.Label(tk_controls, text=f"{self.tk_annotation_cutoff.get():.2f}", width=4)
+        self.tk_annotation_cutoff_label.pack(side="left", padx=(3, 0))
+        ttk.Label(tk_controls, foreground="gray", text="(click an MS2 peak to annotate it)").pack(side="left", padx=10)
+
+        self.tk_overview_plot_frame = ttk.Frame(self.tk_match_plot_frame)
+        self.tk_overview_plot_frame.pack(fill="both", expand=True)
 
     def _create_scatter_plot_panel(self, parent):
         tk_scatter_panel = ttk.LabelFrame(
@@ -437,6 +505,11 @@ class AnnotationGUI:
         tk_controls.pack(fill="x")
         ttk.Checkbutton(tk_controls, text="Show annotations", variable=self.tk_show_annotations,
                         command=self.redraw_scatter_plot).grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(tk_controls, text="Min. peak intensity").grid(row=0, column=2, sticky="w")
+        ttk.Entry(tk_controls, textvariable=self.tk_min_peak_intensity, width=10).grid(row=0, column=3, sticky="w",
+                                                                                        padx=(4, 10))
+        ttk.Label(tk_controls, foreground="gray", text="(fragments and losses; + / - over the plot: zoom)").grid(
+            row=0, column=4, columnspan=4, sticky="w")
 
         # highlight features with MS2 fragments / neutral losses, entries are m/z values or formulas
         ttk.Label(tk_controls, text="Fragments (a; b)").grid(row=1, column=0, sticky="w", pady=2)
@@ -468,7 +541,8 @@ class AnnotationGUI:
         ttk.Button(tk_controls, text="Remove marks", command=self.on_click_remove_mass_differences).grid(row=2,
                                                                                                          column=7)
         ttk.Label(tk_controls, foreground="gray",
-                  text="e.g. NH3; H2O; [M+H]+>[M+NH4]+ (adduct exchange); fragments are ions, e.g. C5H15NO4P+").grid(
+                  text="e.g. NH3; C[13] - C[12]; [M+H]+>[M+NH4]+ (adduct exchange); fragments are ions, "
+                       "e.g. C5H15NO4P+").grid(
             row=3, column=0, columnspan=8, sticky="w")
 
         self.tk_scatter_plot_frame = ttk.Frame(tk_scatter_panel)
@@ -507,7 +581,10 @@ class AnnotationGUI:
         self._on_annotations_changed()
 
         self.match_panel_request += 1
-        self.pending_match_plot = None
+        self.pending_overview = None
+        self.shown_overview = None
+        self.overview_data = self.overview_spectra = None
+        self.peak_annotations = {}
         self._destroy_match_plot()
 
         self.highlighted_f_ids = None
@@ -620,7 +697,8 @@ class AnnotationGUI:
                 ms2_spectra=self.ms2_spectra,
                 require_ms2=require_ms2
             )
-            self.matches_table = self._matches_to_table(self.matches)
+            self.matches_table = self._matches_to_table(self.matches, max_dmz_ppm, max_dmz_da)
+            self.shown_overview = None  # scores may have changed
         except Exception as error:
             self.matches = {}
             self.matches_table = pd.DataFrame(columns=self.table_columns)
@@ -637,16 +715,64 @@ class AnnotationGUI:
         if count == 0:
             messagebox.showinfo("Search complete", "No matches found.")
 
-    def _matches_to_table(self, matches: dict[int, list[dict]]) -> pd.DataFrame:
-        """Turn the output of Library.find_matches into the table shown in the GUI (rounded, RT in minutes)."""
+    def _matches_to_table(self, matches: dict[int, list[dict]], max_dmz_ppm: float, max_dmz_da: float) -> pd.DataFrame:
+        """
+        Turn the output of Library.find_matches into the table shown in the GUI.
+
+        Adds properties of the measured features (m/z, RT in minutes, CCS, summed intensity), the CCS difference
+        to the library entry and the formula to display (in brackets if it doesn't fit the measured m/z).
+        """
+        if not any(matches.values()):  # lib_match_result_to_table can't handle that
+            return pd.DataFrame(columns=self.table_columns + ['feature_id_lib', 'formula_display'])
         table: pd.DataFrame = lib_match_result_to_table(matches)
+        f_ids_meas: pd.Series = table.feature_id_meas
         table.loc[:, 'ms2_score'] = table['ms2_score'].round(3)
         table.loc[:, 'dmz_mda'] = table['dmz_mda'].round(1).abs()
         table.loc[:, 'dmz_ppm'] = table['dmz_ppm'].round(1).abs()
-        table.loc[:, 'RT'] = table.feature_id_meas.apply(
-            lambda f_id: self.meas_db.retention_times_in_seconds[f_id] / 60
-        ).round(2)
+        table['RT'] = (f_ids_meas.map(self.meas_db.retention_times_in_seconds) / 60).round(2)
+        table['intensity'] = pd.to_numeric(f_ids_meas.map(self.meas_db.summed_intensities), errors='coerce').round(2)
+
+        # CCS of 0 means not measured
+        ccs_meas = pd.to_numeric(f_ids_meas.map(self.meas_db.collisional_cross_sections), errors='coerce')
+        ccs_lib = pd.to_numeric(table.feature_id_lib.map(self.lib_db.collisional_cross_sections), errors='coerce')
+        table['ccs_meas'] = ccs_meas.where(ccs_meas > 0).round(1)
+        table['dccs_percent'] = ((ccs_meas - ccs_lib) / ccs_lib * 100).where((ccs_meas > 0) & (ccs_lib > 0)).round(2)
+
+        mzs_meas = f_ids_meas.map(self.meas_db.mzs)
+        has_formula = ~table.formula.isin(['', 'None', 'nan'])
+        fits_mz = self._formula_fits_mz(table.formula, table.adduct, mzs_meas.to_numpy(), max_dmz_ppm, max_dmz_da)
+        table['formula_display'] = np.where(
+            has_formula, np.where(fits_mz, table.formula, '(' + table.formula + ')'), ''
+        )
+        table['mz_meas'] = mzs_meas.round(4)
         return table
+
+    @staticmethod
+    def _formula_fits_mz(
+            formulas: pd.Series,
+            adducts: pd.Series,
+            mzs_meas: np.ndarray,
+            max_dmz_ppm: float,
+            max_dmz_da: float
+    ) -> np.ndarray:
+        """
+        Whether the m/z calculated from formula and adduct matches the measured m/z within the precursor tolerance
+        (stricter of both, as in the search). Formulas or adducts that can't be parsed don't fit.
+        """
+        def calculate_mz(formula: str, adduct: str) -> float:
+            try:
+                return Adduct(adduct).mass_to_mz(CompoundDict(formula).mass)
+            except Exception:
+                return np.nan
+
+        # many matches share formula and adduct
+        mzs_calculated: dict[tuple[str, str], float] = {
+            key: calculate_mz(*key) for key in set(zip(formulas, adducts))
+        }
+        mzs_calc = np.array([mzs_calculated[key] for key in zip(formulas, adducts)], dtype=float)
+        tolerances = np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * mzs_meas)
+        # nan (not parsable) compares as False
+        return np.abs(mzs_calc - mzs_meas) <= tolerances
 
     # ------------------------------------------------------------------------------------------------------------------
     # Filters
@@ -666,25 +792,28 @@ class AnnotationGUI:
                 self.tk_status_field.config(text=f"Filters not updated: {text}")
 
         if self.matches_table.empty:
-            self.filtered_matches_table = self.matches_table.copy()
-            self._show_matches_in_table(self.filtered_matches_table)
+            self._set_filtered_matches_table(self.matches_table.copy())
             return
 
         table: pd.DataFrame = self.matches_table
         mask = np.ones(table.shape[0], dtype=bool)
 
-        # numeric filters: (entry, column or series to compare, type, is minimum, error message)
-        mzs_meas = table.feature_id_meas.map(self.meas_db.mzs)
+        # numeric filters: (entry, column to compare, type, is minimum, error message)
+        # features without a value (e.g. no CCS) are removed by filters on that column
         numeric_filters = [
             (self.tk_filter_min_f_id_meas, table.feature_id_meas, int, True, 'Minimum ID must be a whole number.'),
             (self.tk_filter_max_f_id_meas, table.feature_id_meas, int, False, 'Maximum ID must be a whole number.'),
             (self.tk_filter_min_rt, table.RT, float, True, 'Minimum RT must be a number.'),
             (self.tk_filter_max_rt, table.RT, float, False, 'Maximum RT must be a number.'),
-            (self.tk_filter_min_mz, mzs_meas, float, True, 'Minimum m/z must be a number.'),
-            (self.tk_filter_max_mz, mzs_meas, float, False, 'Maximum m/z must be a number.'),
+            (self.tk_filter_min_mz, table.mz_meas, float, True, 'Minimum m/z must be a number.'),
+            (self.tk_filter_max_mz, table.mz_meas, float, False, 'Maximum m/z must be a number.'),
             (self.tk_filter_min_ms2_score, table.ms2_score, float, True, 'Minimum MS2 score must be a number.'),
             (self.tk_filter_min_n_hits_ms2, table.n_hits_ms2, int, True,
              'Minimum #MS2 peak matches must be a whole number.'),
+            (self.tk_filter_min_ccs, table.ccs_meas, float, True, 'Minimum CCS must be a number.'),
+            (self.tk_filter_max_ccs, table.ccs_meas, float, False, 'Maximum CCS must be a number.'),
+            (self.tk_filter_min_intensity, table.intensity, float, True, 'Minimum intensity must be a number.'),
+            (self.tk_filter_max_intensity, table.intensity, float, False, 'Maximum intensity must be a number.'),
         ]
         for tk_entry, values, value_type, is_minimum, error_message in numeric_filters:
             if not (text := tk_entry.get().strip()):
@@ -714,9 +843,7 @@ class AnnotationGUI:
                 report_invalid('Invalid Formula', f"Invalid formula: {error}")
                 return
 
-        self.filtered_matches_table = table.loc[mask, :].reset_index(drop=True)
-        self._show_matches_in_table(self.filtered_matches_table)
-        self.mark_filtered_features()
+        self._set_filtered_matches_table(table.loc[mask, :])
         if show_empty_message and self.filtered_matches_table.empty:
             self.tk_status_field.config(text="No matches meet the current filters.")
         elif not self.filtered_matches_table.empty:
@@ -746,9 +873,7 @@ class AnnotationGUI:
         for tk_entry in self.tk_filter_entries:
             tk_entry.delete(0, tk.END)
         self.last_filter_values = self._get_filter_values()
-        self.filtered_matches_table = self.matches_table.copy()
-        self._show_matches_in_table(self.filtered_matches_table)
-        self.mark_filtered_features()
+        self._set_filtered_matches_table(self.matches_table)
         self.tk_status_field.config(text=f"Showing all {len(self.matches_table)} matches.")
 
     # ------------------------------------------------------------------------------------------------------------------
@@ -761,6 +886,49 @@ class AnnotationGUI:
     def _library_annotation_key(f_id_meas: int, f_id_lib: int) -> AnnotationKey:
         return "library", int(f_id_meas), str(int(f_id_lib))
 
+    def _set_filtered_matches_table(self, table: pd.DataFrame):
+        """Sort (by the clicked column) and show the filtered matches, the selected match stays selected."""
+        selected = self._get_selected_match()
+        if self.sort_column is not None and not table.empty:
+            table = self._sort_matches(table, self.sort_column, self.sort_descending)
+        self.filtered_matches_table = table.reset_index(drop=True)
+        self._show_matches_in_table(self.filtered_matches_table)
+        self.mark_filtered_features()
+
+        if selected is not None:
+            is_selected = ((self.filtered_matches_table.feature_id_meas == selected.feature_id_meas)
+                           & (self.filtered_matches_table.feature_id_lib == selected.feature_id_lib))
+            if is_selected.any():
+                # selecting the shown match again doesn't replot it, see on_select_table_row
+                item: str = self.tk_matches_table.get_children()[int(np.argmax(is_selected))]
+                self.tk_matches_table.selection_set(item)
+                self.tk_matches_table.see(item)
+
+    def _sort_matches(self, table: pd.DataFrame, column: str, descending: bool) -> pd.DataFrame:
+        """Sort matches by a table column, text case-insensitive, missing values last."""
+        if column == "annotation":  # not a column of the matches table
+            values = pd.Series([self._get_annotation_state(self._library_annotation_key(f_id_meas, f_id_lib))
+                                for f_id_meas, f_id_lib in zip(table.feature_id_meas, table.feature_id_lib)],
+                               index=table.index)
+        else:
+            values = table[column]
+        if values.dtype == object:
+            values = values.astype(str).str.lower()
+        # stable sort, so rows with equal values keep their order (e.g. grouped by measured feature)
+        order = values.sort_values(ascending=not descending, na_position="last", kind="mergesort").index
+        return table.loc[order]
+
+    def on_click_table_heading(self, column: str):
+        """Sort the results table by the clicked column, clicking the same column again reverses the order."""
+        if column == self.sort_column:
+            self.sort_descending = not self.sort_descending
+        else:
+            self.sort_column, self.sort_descending = column, False
+        for c, heading in self.table_headings.items():
+            arrow = (" ▼" if self.sort_descending else " ▲") if c == column else ""
+            self.tk_matches_table.heading(c, text=heading + arrow)
+        self._set_filtered_matches_table(self.filtered_matches_table)
+
     def _show_matches_in_table(self, table: pd.DataFrame):
         """Replace the rows of the results table, rows of the same measured feature share a background color."""
         self._clear_matches_table()
@@ -772,12 +940,49 @@ class AnnotationGUI:
                 f"feature_{f_id_meas}", background=self.table_row_colors[color_idx % n_colors]
             )
 
+        source_columns: list[str] = [self.table_display_columns.get(column, column) for column in self.table_columns]
+        idx_annotation: int = self.table_columns.index("annotation")
         for _, row in table.iterrows():
-            values: list = ["" if pd.isna(value := row.get(column, "")) else value for column in self.table_columns]
-            values[self.table_columns.index("annotation")] = self._get_annotation_state(
+            values: list = ["" if pd.isna(value := row.get(column, "")) else value for column in source_columns]
+            values[idx_annotation] = self._get_annotation_state(
                 self._library_annotation_key(row.feature_id_meas, row.feature_id_lib)
             )
             self.tk_matches_table.insert("", 'end', values=values, tags=(f"feature_{row.feature_id_meas}",))
+
+    def _copy_to_clipboard(self, text: str, description: str):
+        self.tk_root.clipboard_clear()
+        self.tk_root.clipboard_append(text)
+        self.tk_status_field.config(text=f"Copied {description} to the clipboard.")
+
+    def _get_row_text(self, item: str) -> str:
+        return "\t".join(str(value) for value in self.tk_matches_table.item(item, "values"))
+
+    def copy_selected_row(self):
+        if selection := self.tk_matches_table.selection():
+            self._copy_to_clipboard(self._get_row_text(selection[0]), "the selected row")
+
+    def copy_table(self):
+        """Copy the shown (filtered and sorted) results table as tab separated text (e.g. to paste into Excel)."""
+        lines = ["\t".join(self.table_headings[column] for column in self.table_columns)]
+        lines += [self._get_row_text(item) for item in self.tk_matches_table.get_children()]
+        self._copy_to_clipboard("\n".join(lines), f"{len(lines) - 1} rows")
+
+    def on_right_click_table(self, event):
+        """Select the row under the mouse and offer to copy the cell, the row or the whole table."""
+        item: str = self.tk_matches_table.identify_row(event.y)
+        if not item:
+            return
+        self.tk_matches_table.selection_set(item)
+        column: str = self.table_columns[int(self.tk_matches_table.identify_column(event.x)[1:]) - 1]
+        value: str = str(self.tk_matches_table.set(item, column))
+        self.tk_table_menu.delete(0, "end")
+        self.tk_table_menu.add_command(
+            label=f"Copy {self.table_headings[column]}: {value if len(value) <= 40 else value[:37] + '...'}",
+            command=lambda: self._copy_to_clipboard(value, f'"{value}"')
+        )
+        self.tk_table_menu.add_command(label="Copy row", command=self.copy_selected_row)
+        self.tk_table_menu.add_command(label="Copy table", command=self.copy_table)
+        self.tk_table_menu.tk_popup(event.x_root, event.y_root)
 
     def _get_selected_match(self) -> pd.Series | None:
         """Row of filtered_matches_table that is selected in the results table."""
@@ -795,7 +1000,17 @@ class AnnotationGUI:
         if (match := self._get_selected_match()) is None:
             return
         self.mark_selected_feature(int(match.feature_id_meas))
-        self.request_match_plot(int(match.feature_id_meas), int(match.feature_id_lib))
+        if self.ignore_next_table_select:  # selected by a click in the scatter plot, keep its feature overview
+            self.ignore_next_table_select = False
+            return
+        # e.g. selected again after sorting or filtering
+        if ("match", (int(match.feature_id_meas),), int(match.feature_id_lib)) != self.shown_overview:
+            self.request_overview("match", [int(match.feature_id_meas)], int(match.feature_id_lib))
+
+    def on_release_table(self, event):
+        """Click on the already selected row (no selection event): show its match again, e.g. after a feature."""
+        if (item := self.tk_matches_table.identify_row(event.y)) and item in self.tk_matches_table.selection():
+            self.on_select_table_row()
 
     # ------------------------------------------------------------------------------------------------------------------
     # Manual annotations
@@ -816,6 +1031,7 @@ class AnnotationGUI:
                 name=candidate.name_sirius,
                 formula=candidate.formula_sirius,
                 adduct=candidate.adduct_sirius,
+                smiles=candidate.smiles,
                 ms2_score=candidate.confidence_score,
                 reference=reference,
                 candidate_ids=[candidate.id],
@@ -1014,14 +1230,15 @@ class AnnotationGUI:
         tk_widget.pack(fill=tk.BOTH, expand=True)
 
     def _show_in_match_panel(self, fig: Figure, title: str):
-        """Replace the content of the match overview panel."""
+        """Replace the content of the overview panel."""
         self._destroy_match_plot()
         self.tk_match_plot_frame.config(text=title)
-        self.match_canvas = FigureCanvasTkAgg(fig, master=self.tk_match_plot_frame)
-        self.match_toolbar = NavigationToolbar2Tk(self.match_canvas, self.tk_match_plot_frame)
+        self.match_canvas = FigureCanvasTkAgg(fig, master=self.tk_overview_plot_frame)
+        self.match_toolbar = NavigationToolbar2Tk(self.match_canvas, self.tk_overview_plot_frame)
         self.match_toolbar.update()
         self.match_toolbar.pack()
         self._pack_canvas(self.match_canvas)
+        self.match_canvas.mpl_connect('button_press_event', self.on_click_overview)
         self.match_canvas.draw()
 
     def _destroy_match_plot(self):
@@ -1032,122 +1249,201 @@ class AnnotationGUI:
             self.match_toolbar.destroy()
             self.match_toolbar = None
 
-    def request_match_plot(self, f_id_meas: int, f_id_lib: int):
-        """
-        Plot the match overview of a measured and library feature.
-
-        Building the figure is slow, so it is done in a worker thread. Only one worker runs at a time;
-        if the selection changes while plotting, only the latest request is plotted afterwards.
-        """
-        match_result: dict = next(m for m in self.matches[f_id_meas] if m['feature_id'] == f_id_lib)
+    def _get_overview_settings(self) -> OverviewSettings | None:
         try:
-            max_dmz_ppm: float = self.tk_max_dmz_ppm.get()
-            max_dmz_da: float = self.tk_max_dmz_mda.get() * 1e-3
+            ms2_tolerance_da: float = self.tk_max_dmz_ms2_mda.get() * 1e-3
+            ms1_tolerance_da: float = self.tk_max_dmz_mda.get() * 1e-3
+            annotation_cutoff: float = self.tk_annotation_cutoff.get()
         except tk.TclError:
-            messagebox.showerror("Invalid Tolerance", "Check the precursor tolerance values.")
+            messagebox.showerror("Invalid Tolerance", "Check the m/z tolerances.")
+            return None
+        return OverviewSettings(
+            hide_isotope_peaks=self.tk_hide_isotope_peaks.get(),
+            annotation_cutoff=annotation_cutoff,
+            ms2_tolerance_da=ms2_tolerance_da,
+            ms1_tolerance_da=ms1_tolerance_da,
+            # copy, the worker reads it while the user may edit annotations
+            peak_annotations={key: dict(annotations) for key, annotations in self.peak_annotations.items()},
+        )
+
+    def _get_feature_annotation(self, f_id: int) -> dict | None:
+        """Manual annotation of a measured feature (pending or saved): manual > library match > in-source fragment."""
+        annotations: dict[str, dict] = {}
+        for collection in (self.saved_annotations, self.pending_annotations):
+            for key, info in collection.items():
+                if key[1] == f_id and key not in self.discarded_annotations:
+                    annotations.setdefault(key[0], info)
+        for kind in ("manual", "library", "in_source_fragment"):
+            if kind in annotations:
+                return annotations[kind]
+        return None
+
+    def request_overview(self, mode: str, f_ids: list[int], f_id_lib: int = None, reuse_data: bool = False):
+        """
+        Show an overview in the panel: "match" (feature f_ids[0] and library feature f_id_lib), "feature" (f_ids[0])
+        or "comparison" (both f_ids).
+
+        Gathering the data and building the figure are slow, so both run in a worker thread. Only one worker runs at
+        a time; if another overview is requested meanwhile, only the latest one is shown afterwards.
+        With reuse_data, only the settings changed (cutoff, isotope filter, peak annotations) and the data of the
+        shown overview is used again.
+        """
+        if (settings := self._get_overview_settings()) is None:
             return
-        # mass accuracy for the theoretical isotope pattern
-        mz_tol_da: float = max(max_dmz_da, max_dmz_ppm * 1e-6 * self.meas_db.mzs[f_id_meas])
+        key: tuple = (mode, tuple(f_ids), f_id_lib)
+        data: OverviewData | None = self.overview_data if reuse_data and key == self.shown_overview else None
+        match_result = None
+        if mode == "match":
+            match_result = next(m for m in self.matches[f_ids[0]] if m['feature_id'] == f_id_lib)
+        annotations = {f_id: self._get_feature_annotation(f_id) for f_id in f_ids}
 
         self.match_panel_request += 1
-        self.pending_match_plot = (self.match_panel_request, dict(
-            f_id_lib=f_id_lib,
-            f_id_meas=f_id_meas,
-            meas=self.meas_db,
-            mz_tol_da=mz_tol_da,
-            annotation_relative_cutoff=0.3,  # TODO: turn this into slider
-            match_result=match_result,
-        ))
-        self.tk_status_field.config(text=f"Plotting match {f_id_meas} -> {f_id_lib} ...")
-        if not self.match_plot_running:
-            self._start_match_plot_worker()
+        self.shown_overview = key
+        self.pending_overview = (self.match_panel_request, key, match_result, annotations, data, settings)
+        if not reuse_data:
+            self.tk_status_field.config(text=f"Plotting {mode} of feature(s) {', '.join(map(str, f_ids))} ...")
+        if not self.overview_running:
+            self._start_overview_worker()
 
-    def _start_match_plot_worker(self):
-        (request, plot_kwargs), self.pending_match_plot = self.pending_match_plot, None
-        self.match_plot_running = True
+    def redraw_overview(self):
+        """Redraw the shown overview with the current settings."""
+        if self.shown_overview is not None and self.overview_data is not None:
+            self.request_overview(*self.shown_overview, reuse_data=True)
+
+    def _start_overview_worker(self):
+        request, key, match_result, annotations, data, settings = self.pending_overview
+        self.pending_overview = None
+        self.overview_running = True
         threading.Thread(
-            target=self._match_plot_worker,
-            args=(self.lib_db, request, plot_kwargs),
+            target=self._overview_worker,
+            args=(self.meas_db, self.lib_db, self.ms2_spectra, request, key, match_result, annotations, data,
+                  settings),
             daemon=True
         ).start()
 
-    def _match_plot_worker(self, lib_db: Library, request: int, plot_kwargs: dict):
-        """Worker thread: build the match overview figure (not attached to tk yet)."""
-        fig = Figure(figsize=(15, 15))
+    def _overview_worker(self, meas_db: FeatureManagerDB, lib_db: Library, ms2_spectra: dict | None, request: int,
+                         key: tuple, match_result: dict | None, annotations: dict, data: OverviewData | None,
+                         settings: OverviewSettings):
+        """Worker thread: gather the data (unless given) and build the figure (not attached to tk yet)."""
+        fig, spectra, error_text = None, None, None
         try:
-            lib_db.plot_match(fig=fig, **plot_kwargs)
-            error_text = None
+            if data is None:
+                mode, f_ids, f_id_lib = key
+                data = OverviewData(
+                    mode=mode,
+                    features=[gather_feature(meas_db, f_id, ms2_spectra, annotations[f_id]) for f_id in f_ids],
+                    library=gather_library(lib_db, f_id_lib) if mode == "match" else None,
+                    match_result=match_result,
+                )
+            fig = Figure(figsize=(12, 10))
+            spectra = build_overview_figure(fig, data, settings)
         except Exception as error:
-            error_text = str(error)
+            error_text = f"{type(error).__name__}: {error}"
 
         try:
-            self.tk_root.after(0, lambda: self._finish_match_plot(fig, request, plot_kwargs, error_text))
+            self.tk_root.after(0, lambda: self._finish_overview(request, key, data, fig, spectra, error_text))
         except (tk.TclError, RuntimeError):  # window was closed in the meantime
             pass
 
-    def _finish_match_plot(self, fig: Figure, request: int, plot_kwargs: dict, error_text: str | None):
+    def _finish_overview(self, request: int, key: tuple, data: OverviewData | None, fig: Figure | None,
+                         spectra: list[PlottedSpectrum] | None, error_text: str | None):
         """Main thread: show the figure built by the worker, unless newer content was requested in the meantime."""
-        self.match_plot_running = False
-        # selection changed while plotting, skip this figure and plot the latest selection instead
-        if self.pending_match_plot is not None:
-            self._start_match_plot_worker()
+        self.overview_running = False
+        if self.pending_overview is not None:
+            self._start_overview_worker()
             return
-        # e.g. an MS2 comparison was shown in the meantime
         if request != self.match_panel_request:
             return
 
         if error_text is not None:
-            self.tk_status_field.config(text="Could not plot the selected match.")
-            messagebox.showerror("Plot Error", f"Could not plot the selected match:\n{error_text}")
+            self.shown_overview = None  # requesting it again retries
+            self.tk_status_field.config(text="Could not plot the overview.")
+            messagebox.showerror("Plot Error", f"Could not plot the overview:\n{error_text}")
             return
 
-        f_id_meas, f_id_lib = plot_kwargs['f_id_meas'], plot_kwargs['f_id_lib']
-        self._show_in_match_panel(fig, f"Match overview: feature {f_id_meas} -> library feature {f_id_lib}")
-        self.tk_status_field.config(text=f"Plotted match {f_id_meas} -> {f_id_lib}.")
+        self.overview_data, self.overview_spectra = data, spectra
+        mode, f_ids, f_id_lib = key
+        title = {
+            "match": f"Match: feature {f_ids[0]} -> library feature {f_id_lib}",
+            "feature": f"Feature {f_ids[0]}",
+            "comparison": f"Comparison: feature {f_ids[0]} vs {f_ids[-1]}",
+        }[mode]
+        self._show_in_match_panel(fig, title)
+        self.tk_status_field.config(text=f"Plotted {title[0].lower()}{title[1:]}.")
 
-    def plot_ms2_comparison(self):
-        """Mirror plot of the MS2 spectra of the two features selected by shift-click."""
-        f_id_a, f_id_b = self.compared_f_ids
+    def on_click_overview(self, event):
+        """Click on an MS2 peak: edit its annotation (empty annotation shows the m/z again)."""
+        if self.match_toolbar.mode or event.button != 1 or event.inaxes is None or self.overview_spectra is None:
+            return
+        # upper or lower (mirror) spectrum, depending on where the click is
+        candidates = [spectrum for spectrum in self.overview_spectra
+                      if spectrum.ax is event.inaxes and (spectrum.heights[0] > 0) == (event.ydata >= 0)]
+        if not candidates:
+            return
+        spectrum = candidates[0]
+        # closest peak in screen coordinates that reaches up to the click (small neighbors of a large peak are often
+        # only a pixel away), at most a few pixels away
+        x_pixels = event.inaxes.transData.transform(np.column_stack([spectrum.mzs, np.zeros(len(spectrum.mzs))]))[:, 0]
+        distances = np.abs(x_pixels - event.x)
+        distances[np.abs(spectrum.heights) + 0.1 < abs(event.ydata)] = np.inf
+        idx: int = int(np.argmin(distances))
+        if distances[idx] > 6:
+            return
+
+        mz: float = float(spectrum.mzs[idx])
+        annotations: dict[float, str] = self.peak_annotations.setdefault(spectrum.key, {})
+        source = "library feature" if spectrum.key[0] == "lib" else "feature"
+        text = simpledialog.askstring(
+            "Peak annotation", f"Annotation of the peak at m/z {mz:.4f} ({source} {spectrum.key[1]}),\n"
+                               f"empty to show the m/z again:",
+            initialvalue=annotations.get(peak_key(mz), ""), parent=self.tk_root
+        )
+        if text is None:  # cancelled
+            return
+        if text.strip():
+            annotations[peak_key(mz)] = text.strip()
+        else:
+            annotations.pop(peak_key(mz), None)
+        self.redraw_overview()
+
+    def on_change_annotation_cutoff(self, value: str):
+        """Slider moved: update the label right away, redraw once the slider rests."""
+        self.tk_annotation_cutoff_label.config(text=f"{float(value):.2f}")
+        if self.annotation_cutoff_job is not None:
+            self.tk_root.after_cancel(self.annotation_cutoff_job)
+        self.annotation_cutoff_job = self.tk_root.after(300, self._apply_annotation_cutoff)
+
+    def _apply_annotation_cutoff(self):
+        self.annotation_cutoff_job = None
+        self.redraw_overview()
+
+    def show_feature(self, f_id: int):
+        """Overview of a single measured feature (with or without matches)."""
+        self.mark_selected_feature(f_id)
+        self.request_overview("feature", [f_id])
+
+    def on_submit_feature_ids(self):
+        """Feature ID field: one ID shows that feature, two IDs (separated by , ; or space) compare them."""
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
         try:
-            max_ms2_dmz_da: float = self.tk_max_dmz_ms2_mda.get() * 1e-3
-        except tk.TclError:
-            messagebox.showerror("Invalid Tolerance", "Check the MS2 fragment tolerance.")
+            f_ids = [int(part) for part in re.split(r"[,;\s]+", self.tk_feature_ids_entry.get().strip()) if part]
+        except ValueError:
+            messagebox.showerror("Invalid input", "Feature IDs must be whole numbers.")
             return
-        if self.ms2_spectra is not None:
-            spectra = {f_id: self.ms2_spectra.get(f_id) for f_id in self.compared_f_ids}
-        else:  # still loading
-            spectra = self.meas_db.get_ms_spectra(self.compared_f_ids, level=2)
-        spectrum_a, spectrum_b = spectra.get(f_id_a), spectra.get(f_id_b)
-
-        fig = Figure(figsize=(8, 5))
-        ax = fig.add_subplot(111)
-        labels: list[str] = []
-        for f_id, spectrum, color, as_mirror in zip(
-                self.compared_f_ids, (spectrum_a, spectrum_b), COMPARISON_COLORS, (False, True)
-        ):
-            rt, mz = self._get_rt_mz(f_id)
-            labels.append(f"feature {f_id} (RT {rt:.2f} min, m/z {mz:.4f})")
-            if spectrum is None:
-                ax.text(0.5, 0.25 if as_mirror else 0.75, f"no MS2 spectrum for feature {f_id}",
-                        transform=ax.transAxes, ha="center", color=color)
-                continue
-            spectrum.plot(ax=ax, as_mirror=as_mirror, normalize_intensities=True,
-                          annotation_relative_cutoff=0.1, linefmt=color)
-
-        if spectrum_a is not None and spectrum_b is not None:
-            score, n_hits = cosine_similarity_sym(spectrum_a, spectrum_b, max_ms2_dmz_da, return_nhits=True)
-            ax.set_title(f"Symmetric cosine similarity: {score:.3f} ({n_hits} peaks matched)")
-        ax.axhline(0, color="black", linewidth=0.5)
-        ax.set_xlabel("m/z")
-        ax.set_ylabel("Relative intensity")
-        ax.legend(handles=[Line2D([], [], color=color, label=label) for color, label in zip(COMPARISON_COLORS, labels)],
-                  loc="upper left")
-        fig.tight_layout()
-
-        # replaces a match overview that may still be built in the worker
-        self.match_panel_request += 1
-        self.pending_match_plot = None
-        self._show_in_match_panel(fig, f"MS2 comparison: feature {f_id_a} vs {f_id_b}")
+        if not 1 <= len(f_ids) <= 2 or len(set(f_ids)) != len(f_ids):
+            messagebox.showerror("Invalid input", "Enter one feature ID or two different ones.")
+            return
+        if missing := [f_id for f_id in f_ids if f_id not in self.meas_db.mzs]:
+            messagebox.showerror("Invalid input", f"There is no measured feature {', '.join(map(str, missing))}.")
+            return
+        if len(f_ids) == 1:
+            self.show_feature(f_ids[0])
+        else:
+            self.compared_f_ids = f_ids
+            self.mark_compared_features()
+            self.request_overview("comparison", f_ids)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Scatter plot
@@ -1199,6 +1495,8 @@ class AnnotationGUI:
         self.scatter_toolbar.pack()
         self._pack_canvas(self.scatter_canvas)
         self.scatter_canvas.mpl_connect('button_press_event', self.on_click_scatter)
+        self.scatter_canvas.mpl_connect('key_press_event', self.on_key_scatter)
+        self.scatter_canvas.mpl_connect('figure_enter_event', self.on_enter_scatter)
 
         self.mark_filtered_features()
         if (match := self._get_selected_match()) is not None:
@@ -1216,8 +1514,9 @@ class AnnotationGUI:
         """
         Highlight features whose MS2 spectrum contains the entered fragments and neutral losses.
 
-        Peaks are matched with the MS2 fragment tolerance. With "all", a feature needs every entered
-        fragment and loss, with "any" one of them is enough. Empty fields remove the highlight.
+        Peaks are matched with the MS2 fragment tolerance, peaks below the minimum peak intensity are ignored.
+        With "all", a feature needs every entered fragment and loss, with "any" one of them is enough.
+        Empty fields remove the highlight.
         """
         if self.meas_db is None:
             messagebox.showerror("Error", "Please load a measured database first.")
@@ -1226,11 +1525,12 @@ class AnnotationGUI:
             fragments = parse_masses(self.tk_fragments_entry.get())
             losses = parse_masses(self.tk_losses_entry.get())
             mz_tol_da: float = self.tk_max_dmz_ms2_mda.get() * 1e-3
+            min_intensity: float = self.tk_min_peak_intensity.get()
         except ValueError as error:
             messagebox.showerror("Invalid input", str(error))
             return
         except tk.TclError:
-            messagebox.showerror("Invalid Tolerance", "Check the MS2 fragment tolerance.")
+            messagebox.showerror("Invalid input", "Check the MS2 fragment tolerance and the minimum peak intensity.")
             return
         if not (fragments or losses):
             self.on_click_remove_highlight()
@@ -1238,8 +1538,8 @@ class AnnotationGUI:
 
         try:
             f_id_sets: list[set[int]] = (
-                    [set(self.meas_db.filter_by_fragment_mz(mass, mz_tol_da)) for _, mass in fragments]
-                    + [set(self.meas_db.filter_by_neutral_loss(mass, mz_tol_da)) for _, mass in losses]
+                    [set(self.meas_db.filter_by_fragment_mz(mass, mz_tol_da, min_intensity)) for _, mass in fragments]
+                    + [set(self.meas_db.filter_by_neutral_loss(mass, mz_tol_da, min_intensity)) for _, mass in losses]
             )
         except Exception as error:
             messagebox.showerror("Error", f"Could not search for fragments and losses:\n{error}")
@@ -1258,7 +1558,8 @@ class AnnotationGUI:
             f"losses {describe(losses)}" if losses else "",
         ) if part)
         self.tk_status_field.config(
-            text=f"Highlighted {len(self.highlighted_f_ids)} features with {mode} of {searched}."
+            text=f"Highlighted {len(self.highlighted_f_ids)} features with {mode} of {searched} "
+                 f"(peaks above {min_intensity:g})."
         )
 
     def on_click_remove_highlight(self):
@@ -1410,15 +1711,14 @@ class AnnotationGUI:
 
     def on_click_scatter(self, event):
         """
-        Click: select the best match of the closest feature in the results table.
-        Shift-click: add the closest feature to the MS2 comparison (the oldest of two is replaced).
+        Click: overview of the closest feature, its best match in the results table is selected.
+        Shift-click: add the closest feature to the comparison (the oldest of two is replaced).
         """
         # ignore clicks outside the axes or while zooming / panning with the toolbar
         if event.inaxes is not self.scatter_ax or self.scatter_toolbar.mode:
             return
         if (closest_f_id := self._find_closest_feature(event.xdata, event.ydata)) is None:
             return
-        rt, mz = self._get_rt_mz(closest_f_id)
         self.last_clicked_f_id = closest_f_id
 
         # modifiers come from the state of this click; event.key is the last key seen by the canvas and can get
@@ -1427,16 +1727,13 @@ class AnnotationGUI:
             self.add_feature_to_comparison(closest_f_id)
             return
 
-        if not self.select_best_match_in_table(closest_f_id):
-            self.mark_selected_feature(closest_f_id)
-            self.tk_status_field.config(
-                text=f"Feature {closest_f_id} (RT {rt:.2f} min, m/z {mz:.4f}) has no matches with the current filters."
-            )
+        self.select_best_match_in_table(closest_f_id, show_match=False)
+        self.show_feature(closest_f_id)
 
-    def select_best_match_in_table(self, f_id_meas: int) -> bool:
+    def select_best_match_in_table(self, f_id_meas: int, show_match: bool = True) -> bool:
         """
         Select the match with the highest MS2 score of a measured feature in the results table (selecting a row
-        marks the feature and plots the match overview). Returns False if the filtered table has no match for it.
+        shows the match overview, unless show_match is False). Returns False if the filtered table has no match.
         """
         rows = self.filtered_matches_table.index[self.filtered_matches_table.feature_id_meas == f_id_meas]
         if rows.empty:
@@ -1445,24 +1742,44 @@ class AnnotationGUI:
         best_row = self.filtered_matches_table.loc[rows, 'ms2_score'].fillna(-np.inf).idxmax()
         # rows of the table are in the order of filtered_matches_table (its index is reset when filtering)
         item: str = self.tk_matches_table.get_children()[best_row]
+        # the selection event is only generated if the selection changes
+        if not show_match and item not in self.tk_matches_table.selection():
+            self.ignore_next_table_select = True
         self.tk_matches_table.selection_set(item)
         self.tk_matches_table.see(item)
         return True
 
+    def on_enter_scatter(self, event):
+        """Keys only reach the canvas if it has the focus, so take it when the mouse enters (unless typing)."""
+        focused = self.tk_root.focus_get()
+        if not isinstance(focused, (tk.Entry, ttk.Entry, tk.Text)):  # ttk.Combobox is a ttk.Entry
+            self.scatter_canvas.get_tk_widget().focus_set()
+
+    def on_key_scatter(self, event):
+        """+ / - zoom in / out by scatter_zoom_factor, centered on the mouse position."""
+        if event.inaxes is not self.scatter_ax or event.key not in ("+", "-"):
+            return
+        scale: float = 1 / self.scatter_zoom_factor if event.key == "+" else self.scatter_zoom_factor
+        # the point under the mouse stays where it is
+        x_min, x_max = self.scatter_ax.get_xlim()
+        y_min, y_max = self.scatter_ax.get_ylim()
+        self.scatter_ax.set_xlim(event.xdata - (event.xdata - x_min) * scale, event.xdata + (x_max - event.xdata) * scale)
+        self.scatter_ax.set_ylim(event.ydata - (event.ydata - y_min) * scale, event.ydata + (y_max - event.ydata) * scale)
+        # makes the zoom steps available to the back / forward buttons of the toolbar
+        self.scatter_toolbar.push_current()
+        self.scatter_canvas.draw_idle()
+
     def add_feature_to_comparison(self, f_id: int):
-        """Add a feature to the MS2 comparison, once there are two, their spectra are plotted."""
+        """Add a feature to the comparison: the first one is shown alone, two are compared."""
         if f_id in self.compared_f_ids:
             self.tk_status_field.config(text=f"Feature {f_id} is already compared.")
             return
         self.compared_f_ids = (self.compared_f_ids + [f_id])[-2:]
         self.mark_compared_features()
         if len(self.compared_f_ids) < 2:
-            self.tk_status_field.config(text=f"Feature {f_id} selected, shift-click a second feature to compare.")
-            return
-        self.plot_ms2_comparison()
-        self.tk_status_field.config(
-            text=f"Comparing MS2 spectra of features {self.compared_f_ids[0]} and {self.compared_f_ids[1]}."
-        )
+            self.request_overview("feature", [f_id])
+        else:
+            self.request_overview("comparison", list(self.compared_f_ids))
 
 
 class AnnotationManagerWindow(tk.Toplevel):

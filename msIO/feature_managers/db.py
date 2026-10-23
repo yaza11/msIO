@@ -24,7 +24,7 @@ from msIO.list_of_ions.base import PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy.orm import load_only
-from sqlalchemy import select, inspect, text, or_
+from sqlalchemy import select, inspect, text, or_, func
 from sqlalchemy.orm import selectinload, joinedload
 
 # need to import so that sqlalchemy knows about relationships
@@ -177,6 +177,13 @@ class FeatureManagerDB:
     @cached_property
     def collisional_cross_sections(self):
         return self._get_dict_for_attributes(FeatureMetaboScape, 'CCS')
+
+    @cached_property
+    def summed_intensities(self) -> dict[int, float]:
+        """Sum of the intensities of each feature over all samples (features without intensities are missing)."""
+        stmt = select(Intensity.feature_id, func.sum(Intensity.value)).group_by(Intensity.feature_id)
+        with self.session_maker() as session:
+            return dict(session.execute(stmt).all())
 
     @cached_property
     def formula_metaboscape(self):
