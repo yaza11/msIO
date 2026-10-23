@@ -64,7 +64,7 @@ class MsSpec(SqlBaseClass, FeatureBaseClass):
     peaks_id: Mapped[Optional[int]] = mapped_column(ForeignKey("peak_list.id"))
     peaks: Mapped[Optional["PeakList"]] = relationship()
 
-    feature_mgf_id: Mapped[int] = mapped_column(ForeignKey("mgf_features.id"), nullable=False)
+    feature_mgf_id: Mapped[int] = mapped_column(ForeignKey("mgf_features.id"), nullable=False, index=True)
     feature_mgf: Mapped["FeatureMgf"] = relationship(back_populates="ms_specs")
 
 
@@ -81,7 +81,7 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "mgf_features"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    feature_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, index=True)
     polarity: Mapped[Optional[str]] = mapped_column(
         Enum("pos", "neg", name="polarity_enum"),
         nullable=True

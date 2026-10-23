@@ -50,6 +50,17 @@ KNOWN_ISOTOPE_DISTANCES: dict[str, float] = {
     '13C, z=2': _C13 / 2,
 }
 KNOWN_DISTANCE_TOLERANCE_DA: float = 2e-3
+# labels of the known distances (mathtext for the superscripts)
+KNOWN_ISOTOPE_LABELS: dict[str, str] = {
+    '13C': r'$^{13}$C',
+    '2x13C': r'2×$^{13}$C',
+    '34S': r'$^{34}$S',
+    '18O': r'$^{18}$O',
+    '13C, z=2': r'$^{13}$C, z=2',
+}
+# height (relative intensity) of the lowest distance arrow in the MS1 plot and the step between stacked arrows
+MS1_ARROW_BASE: float = 1.1
+MS1_ARROW_STEP: float = 0.17
 
 FEATURE_COLORS: tuple[str, str] = ("C2", "C1")  # same as the compared features in the scatter plot
 LIBRARY_COLOR: str = "C3"
@@ -201,6 +212,8 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
     relative: bool = data.mode == "comparison"
     formula, adduct = _get_formula_adduct(data)
     handles: list = []
+    # distance arrows are stacked above the spectra (one level per arrow, all features)
+    level: int = 0
     for feature, color in zip(data.features, FEATURE_COLORS):
         if feature.ms1 is None or len(feature.ms1.mzs) == 0:
             continue
@@ -215,16 +228,24 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
         handles.append(Line2D([], [], color=color, label=f"feature {feature.f_id}"))
 
         # monoisotopic peak: closest to the precursor m/z
-        mz_mono = mzs[np.argmin(np.abs(mzs - feature.mz))]
-        for mz, height in zip(mzs, heights):
+        idx_mono: int = int(np.argmin(np.abs(mzs - feature.mz)))
+        mz_mono, height_mono = mzs[idx_mono], heights[idx_mono]
+        # horizontal double arrow from the monoisotopic peak to each peak, labelled with the distance
+        for mz, height in sorted(zip(mzs, heights), key=lambda peak: abs(peak[0] - mz_mono)):
             if height < MS1_LABEL_CUTOFF or mz == mz_mono:
                 continue
             distance = mz - mz_mono
-            known = [name for name, d in KNOWN_ISOTOPE_DISTANCES.items()
+            known = [KNOWN_ISOTOPE_LABELS[name] for name, d in KNOWN_ISOTOPE_DISTANCES.items()
                      if abs(distance - d) <= KNOWN_DISTANCE_TOLERANCE_DA]
-            label = f"{distance:+.4f}" + (f" ({', '.join(known)})" if known else "")
-            ax.annotate(label, xy=(mz - offset, height), ha="center", va="bottom", rotation=90, fontsize=7,
-                        color=color)
+            y: float = MS1_ARROW_BASE + level * MS1_ARROW_STEP
+            level += 1
+            # dotted guides from both peaks up to their arrow
+            ax.vlines([mz_mono - offset, mz - offset], [height_mono, height], y, colors=color, linewidth=0.5,
+                      linestyles="dotted")
+            ax.annotate("", xy=(mz - offset, y), xytext=(mz_mono - offset, y),
+                        arrowprops=dict(arrowstyle="<->", color=color, linewidth=0.8, shrinkA=0, shrinkB=0))
+            ax.text((mz + mz_mono) / 2 - offset, y, f"{abs(distance):.4f}" + (f" ({', '.join(known)})" if known else ""),
+                    ha="center", va="bottom", fontsize=7, color=color)
 
     window = (data.features[0].mz - MS1_WINDOW_DA[0], data.features[0].mz + MS1_WINDOW_DA[1])
     if formula and adduct and not relative:
@@ -248,8 +269,9 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
     if not handles:
         ax.text(0.5, 0.5, "no MS1 spectrum", transform=ax.transAxes, ha="center")
     else:
-        ax.legend(handles=handles, loc="upper right", fontsize=7)
-    ax.set_ylim(0, 1.45)  # room for the labels
+        # the distance arrows are at the top, the higher isotope peaks on the right are small
+        ax.legend(handles=handles, loc="center right", fontsize=7)
+    ax.set_ylim(0, MS1_ARROW_BASE + max(level, 1) * MS1_ARROW_STEP + 0.1)  # room for the distance arrows
     ax.set_xlabel("m/z - precursor m/z" if relative else "m/z")
     ax.set_ylabel("Relative intensity")
     ax.set_title("MS1", fontsize=9)

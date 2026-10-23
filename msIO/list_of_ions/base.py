@@ -27,7 +27,8 @@ class PeakFeature(SqlBaseClass, PeakBaseClass):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
-    peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"))
+    # indexed: loading the peaks of spectra joins on it (huge speed up for large libraries)
+    peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"), index=True)
     peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")  # every peak is part of a peak list
 
 
@@ -91,10 +92,9 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
                 assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
             else:
                 annotations = [None] * len(mzs)
-            peaks = []
-            for mz, i, a in zip(mzs, intensities, annotations):
-                peaks.append(PeakFeature(mz=mz, intensity=i, annotation=a, peak_list=self))
-            return peaks
+            # peak_list is set when the peaks are assigned to self.peaks (back_populates), setting it here as
+            # well would fire the relationship events twice per peak
+            return [PeakFeature(mz=mz, intensity=i, annotation=a) for mz, i, a in zip(mzs, intensities, annotations)]
 
         assert (mzs is None) and (intensities is None), 'provide either peaks OR (mzs AND intensities)'
         if isinstance(peaks, dict):
