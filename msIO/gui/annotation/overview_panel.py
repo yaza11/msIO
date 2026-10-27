@@ -48,16 +48,17 @@ class OverviewPanel(CollapsibleSection):
         self.canvas: FigureCanvasTkAgg = None
         self.toolbar: NavigationToolbar2Tk = None
         self.running: bool = False
-        # latest request: (request number, key, match result, feature annotations, data to reuse, settings)
+        # latest request: (request number, key, library, match result, feature annotations, data to reuse, settings)
         self.pending: tuple = None
         # incremented for every new content of the panel, so a slow overview can't replace newer content
         self.request_number: int = 0
-        # (mode, feature ids, library feature id) of the shown overview, requesting it again doesn't replot it
+        # (mode, feature ids, (library, library feature id)) of the shown overview, requesting it again doesn't replot
+        # it
         self.shown_key: tuple = None
         self.data: OverviewData = None  # data of the shown overview, reused when only settings change
         self.spectra: list[PlottedSpectrum] = None  # plotted MS2 spectra, for clicks on peaks
         # annotations of library MS2 peaks set in this session (the library is not changed):
-        # {("lib", feature id): {m/z (4 decimals): annotation}}
+        # {("lib", "library:feature id"): {m/z (4 decimals): annotation}}
         self.peak_annotations: dict[SpectrumKey, dict[float, str]] = {}
 
         tk_controls = ttk.Frame(self.body)
@@ -106,10 +107,10 @@ class OverviewPanel(CollapsibleSection):
             panels=tuple(panel for panel, variable in self.tk_show_panels.items() if variable.get()),
         )
 
-    def request(self, mode: str, f_ids: list[int], f_id_lib: int = None, reuse_data: bool = False):
+    def request(self, mode: str, f_ids: list[int], lib_ref: tuple[str, int] = None, reuse_data: bool = False):
         """
-        Show an overview: "match" (feature f_ids[0] and library feature f_id_lib), "feature" (f_ids[0]) or
-        "comparison" (both f_ids).
+        Show an overview: "match" (feature f_ids[0] and lib_ref = (library file name, library feature id)), "feature"
+        (f_ids[0]) or "comparison" (both f_ids).
 
         Only one worker runs at a time; if another overview is requested meanwhile, only the latest one is shown
         afterwards. With reuse_data, only the settings changed (cutoff, isotope filter, peak annotations, plots) and
@@ -117,16 +118,17 @@ class OverviewPanel(CollapsibleSection):
         """
         if (settings := self._get_settings()) is None:
             return
-        key: tuple = (mode, tuple(f_ids), f_id_lib)
+        key: tuple = (mode, tuple(f_ids), lib_ref)
         data: OverviewData | None = self.data if reuse_data and key == self.shown_key else None
-        match_result = None
+        match_result, lib_db = None, None
         if mode == "match":
-            match_result = next(m for m in self.app.matches[f_ids[0]] if m['feature_id'] == f_id_lib)
+            match_result = self.app.get_match_result(f_ids[0], *lib_ref)
+            lib_db = self.app.lib_dbs[lib_ref[0]]
         annotations = {f_id: self.app.annotations.feature_annotation(f_id) for f_id in f_ids}
 
         self.request_number += 1
         self.shown_key = key
-        self.pending = (self.request_number, key, match_result, annotations, data, settings)
+        self.pending = (self.request_number, key, lib_db, match_result, annotations, data, settings)
         if not reuse_data:
             self.app.set_status(f"Plotting {mode} of feature(s) {', '.join(map(str, f_ids))} ...")
         if not self.running:
@@ -147,28 +149,28 @@ class OverviewPanel(CollapsibleSection):
         self.set_title(self.DEFAULT_TITLE)
 
     def _start_worker(self):
-        request_number, key, match_result, annotations, data, settings = self.pending
+        request_number, key, lib_db, match_result, annotations, data, settings = self.pending
         self.pending = None
         self.running = True
         threading.Thread(
             target=self._worker,
-            args=(self.app.meas_db, self.app.lib_db, self.app.ms2_spectra, request_number, key, match_result,
+            args=(self.app.meas_db, lib_db, self.app.ms2_spectra, request_number, key, match_result,
                   annotations, data, settings),
             daemon=True
         ).start()
 
-    def _worker(self, meas_db: FeatureManagerDB, lib_db: Library, ms2_spectra: dict | None, request_number: int,
+    def _worker(self, meas_db: FeatureManagerDB, lib_db: Library | None, ms2_spectra: dict | None, request_number: int,
                 key: tuple, match_result: dict | None, annotations: dict, data: OverviewData | None,
                 settings: OverviewSettings):
         """Worker thread: gather the data (unless given) and build the figure (not attached to tk yet)."""
         fig, spectra, error_text = None, None, None
         try:
             if data is None:
-                mode, f_ids, f_id_lib = key
+                mode, f_ids, lib_ref = key
                 data = OverviewData(
                     mode=mode,
                     features=[gather_feature(meas_db, f_id, ms2_spectra, annotations[f_id]) for f_id in f_ids],
-                    library=gather_library(lib_db, f_id_lib) if mode == "match" else None,
+                    library=gather_library(lib_db, lib_ref[1]) if mode == "match" else None,
                     match_result=match_result,
                 )
             fig = Figure(figsize=(12, 10))
@@ -195,9 +197,9 @@ class OverviewPanel(CollapsibleSection):
             return
 
         self.data, self.spectra = data, spectra
-        mode, f_ids, f_id_lib = key
+        mode, f_ids, lib_ref = key
         title = {
-            "match": f"Match: feature {f_ids[0]} -> library feature {f_id_lib}",
+            "match": f"Match: feature {f_ids[0]} -> library feature {lib_ref[1]} ({lib_ref[0]})" if lib_ref else "",
             "feature": f"Feature {f_ids[0]}",
             "comparison": f"Comparison: feature {f_ids[0]} vs {f_ids[-1]}",
         }[mode]
@@ -212,7 +214,7 @@ class OverviewPanel(CollapsibleSection):
         """Number of MS2 peaks removed by the isotope filter (all shown spectra)."""
         n_peaks: dict[SpectrumKey, int] = {("meas", f.f_id): len(f.ms2.mzs) for f in data.features if f.ms2 is not None}
         if data.library is not None and data.library.ms2 is not None:
-            n_peaks[("lib", data.library.f_id)] = len(data.library.ms2.mzs)
+            n_peaks[data.library.key] = len(data.library.ms2.mzs)
         return sum(n_peaks[spectrum.key] - len(spectrum.mzs) for spectrum in spectra if spectrum.key in n_peaks)
 
     # ---- canvas -----------------------------------------------------------------------------------------------------

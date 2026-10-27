@@ -12,7 +12,8 @@ class AnnotationStore:
     State of the manual annotations (no GUI).
 
     saved:     annotations in the measured database {key: info}, info holds kind, name, formula, adduct, smiles,
-               ms2_score, reference and the candidate_ids of the database rows
+               ms2_score, reference (library or parent feature id), library_name (file name of the library) and the
+               candidate_ids of the database rows
     pending:   annotations to add {key: info}
     discarded: pending annotations not to add and saved annotations to remove
     """
@@ -23,8 +24,9 @@ class AnnotationStore:
         self.discarded: set[AnnotationKey] = set()
 
     @staticmethod
-    def library_key(f_id_meas: int, f_id_lib: int) -> AnnotationKey:
-        return "library", int(f_id_meas), str(int(f_id_lib))
+    def library_key(f_id_meas: int, library_name: str, f_id_lib: int) -> AnnotationKey:
+        """Feature ids of different libraries overlap, so the reference is "library file name:library feature id"."""
+        return "library", int(f_id_meas), f"{library_name}:{int(f_id_lib)}"
 
     def reset(self, meas_db: FeatureManagerDB | None):
         """Forget all changes and read the annotations of a (new) measured database."""
@@ -40,8 +42,13 @@ class AnnotationStore:
         for candidate in meas_db.get_manual_annotations():
             kind: str = FeatureManagerDB.get_manual_annotation_kind(candidate)
             reference: int | None = FeatureManagerDB.get_referenced_feature_id(candidate)
-            ref: str = f"{candidate.name_sirius}|{candidate.adduct_sirius}" if kind == "manual" else str(reference)
-            key: AnnotationKey = (kind, candidate.feature_id, ref)
+            library_name: str = FeatureManagerDB.get_referenced_library(candidate) or ""
+            if kind == "library":
+                key: AnnotationKey = self.library_key(candidate.feature_id, library_name, reference)
+            elif kind == "manual":
+                key = (kind, candidate.feature_id, f"{candidate.name_sirius}|{candidate.adduct_sirius}")
+            else:
+                key = (kind, candidate.feature_id, str(reference))
             if key in self.saved:  # stored more than once
                 self.saved[key]["candidate_ids"].append(candidate.id)
                 continue
@@ -53,6 +60,7 @@ class AnnotationStore:
                 smiles=candidate.smiles,
                 ms2_score=candidate.confidence_score,
                 reference=reference,
+                library_name=library_name if kind == "library" else None,
                 candidate_ids=[candidate.id],
             )
 
@@ -89,6 +97,11 @@ class AnnotationStore:
                 self.discarded.add(key)
             else:
                 self.discarded.discard(key)
+
+    def kept(self) -> dict[AnnotationKey, dict]:
+        """Annotations as they are after writing the changes: saved and pending ones that are not discarded."""
+        return {key: info for collection in (self.saved, self.pending) for key, info in collection.items()
+                if key not in self.discarded}
 
     def annotated_feature_ids(self) -> set[int]:
         """Measured features with an annotation that is (or will be) in the database."""

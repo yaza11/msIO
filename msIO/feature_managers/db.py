@@ -665,7 +665,10 @@ class FeatureManagerDB:
             f_id_lib: int,
             ms2_score: float = None
     ):
-        if (f_id_meas, f_id_lib) in self.get_f_ids_manual_annotations().values():
+        folder: str = f'{MANUAL_LIBRARY_ANNOTATION} from "{os.path.basename(library.path_file)}" for feature "{f_id_lib}"'
+        # feature ids of different libraries overlap, so the library is part of the check
+        if any(candidate.feature_id == f_id_meas and candidate.sirius_compound_folder == folder
+               for candidate in self.get_manual_annotations(kinds=['library'])):
             warnings.warn(f'Measured feature with id {f_id_meas} has already been annotated with library feature {f_id_lib}.')
             return
 
@@ -676,11 +679,12 @@ class FeatureManagerDB:
             num_adducts=1,
             confidence_score=ms2_score,
             adduct_sirius=f_lib.metaboscape.adduct_metaboscape,
+            formula_sirius=f_lib.metaboscape.formula_metaboscape,
             name_sirius=compound_candidate_lib.name_sirius,
             smiles=compound_candidate_lib.smiles,
             inchi=compound_candidate_lib.inchi,
             xlogp=compound_candidate_lib.xlogp,
-            sirius_compound_folder=f'{MANUAL_LIBRARY_ANNOTATION} from "{os.path.basename(library.path_file)}" for feature "{f_id_lib}"'
+            sirius_compound_folder=folder
         ))
 
     def add_manual_annotation(
@@ -773,6 +777,14 @@ class FeatureManagerDB:
         if ' feature "' not in folder:
             return None
         return int(folder.split(' feature "')[1].strip('"'))
+
+    @staticmethod
+    def get_referenced_library(compound_candidate: CompoundCandidate) -> str | None:
+        """File name of the library of a library annotation."""
+        folder: str = compound_candidate.sirius_compound_folder or ''
+        if ' from "' not in folder:
+            return None
+        return folder.split(' from "')[1].split('"')[0]
 
     def get_manual_annotations(self, kinds: Iterable[ManualAnnotationKind] = None) -> list[CompoundCandidate]:
         """Manual annotations of the given kinds (default: all kinds)."""

@@ -47,7 +47,7 @@ class AnnotationManagerWindow(tk.Toplevel):
             "state": ("State", 85, "center"),
             "kind": ("Kind", 110, "w"),
             "feature_id_meas": ("Meas. ID", 70, "center"),
-            "reference": ("Reference", 90, "center"),
+            "reference": ("Reference", 170, "w"),
             "name": ("Name", 250, "w"),
             "formula": ("Formula", 110, "w"),
             "adduct": ("Adduct", 85, "w"),
@@ -112,7 +112,6 @@ class AnnotationManagerWindow(tk.Toplevel):
                 state = "to remove" if discarded else "in database"
             else:
                 state = "discarded" if discarded else "to add"
-            reference = info.get("reference")
             ms2_score = info.get("ms2_score")
             iid = str(idx)
             self.iid_to_key[iid] = key
@@ -121,7 +120,7 @@ class AnnotationManagerWindow(tk.Toplevel):
                 state,
                 ANNOTATION_KIND_LABELS.get(kind, kind),
                 f_id_meas,
-                "" if reference is None else f"{'lib.' if kind == 'library' else 'parent'} {reference}",
+                self._describe_reference(kind, info),
                 info.get("name") or "",
                 info.get("formula") or "",
                 info.get("adduct") or "",
@@ -130,6 +129,14 @@ class AnnotationManagerWindow(tk.Toplevel):
 
         self.tk_table.selection_set([iid for iid, key in self.iid_to_key.items() if key in selected_keys])
         self.tk_table.yview_moveto(y_view)
+
+    @staticmethod
+    def _describe_reference(kind: str, info: dict) -> str:
+        if (reference := info.get("reference")) is None:
+            return ""
+        if kind == "library":
+            return f"{info.get('library_name') or 'lib.'}: {reference}"
+        return f"parent {reference}"
 
     def on_double_click(self, event):
         if iid := self.tk_table.identify_row(event.y):
@@ -248,7 +255,7 @@ class ManualAnnotationDialog(tk.Toplevel):
 
 class MzFromCompoundDialog(tk.Toplevel):
     """
-    Dialog to set the m/z filter of the results table from a compound: searched by name in the library, built with
+    Dialog to set the m/z filter of the results table from a compound: searched by name in the libraries, built with
     the IPL builder of LipidCalculator or entered as formula and adduct. The filter is m/z ± precursor tolerance.
     """
 
@@ -269,7 +276,7 @@ class MzFromCompoundDialog(tk.Toplevel):
         # library search results: {row id in the table: (formula, adduct, m/z of the library)}
         self.search_results: dict[str, tuple[str | None, str | None, float | None]] = {}
 
-        tk_search = ttk.LabelFrame(self, text="Search the library by name", padding=8)
+        tk_search = ttk.LabelFrame(self, text="Search the libraries by name", padding=8)
         tk_search.pack(fill="both", expand=True, padx=10, pady=(10, 5))
         tk_search_bar = ttk.Frame(tk_search)
         tk_search_bar.pack(fill="x")
@@ -284,8 +291,8 @@ class MzFromCompoundDialog(tk.Toplevel):
         tk_table_frame = ttk.Frame(tk_search)
         tk_table_frame.pack(fill="both", expand=True, pady=(5, 0))
         columns: dict[str, tuple[str, int, str]] = {
-            "name": ("Name", 330, "w"), "formula": ("Formula", 140, "w"), "adduct": ("Adduct", 90, "w"),
-            "mz": ("m/z", 90, "e"), "f_id": ("Lib. ID", 70, "center"),
+            "name": ("Name", 280, "w"), "formula": ("Formula", 130, "w"), "adduct": ("Adduct", 80, "w"),
+            "mz": ("m/z", 80, "e"), "f_id": ("Lib. ID", 60, "center"), "library": ("Library", 140, "w"),
         }
         self.tk_table = ttk.Treeview(tk_table_frame, columns=list(columns), show="headings", selectmode="browse",
                                      height=10)
@@ -320,7 +327,7 @@ class MzFromCompoundDialog(tk.Toplevel):
         ttk.Button(tk_buttons, text="Close", command=self.destroy).pack(side="right")
         ttk.Button(tk_buttons, text="Apply m/z filter", command=self.on_click_apply).pack(side="right", padx=5)
 
-        if self.app.lib_db is None:
+        if not self.app.lib_dbs:
             self.tk_search_button.state(["disabled"])
             self.tk_search_info.set("load a library database to search it")
         tk_name_entry.focus_set()
@@ -345,19 +352,21 @@ class MzFromCompoundDialog(tk.Toplevel):
                                f"precursor tolerance)")
 
     def on_click_search(self):
-        """Search the library names in a worker thread (millions of names in large libraries)."""
-        if not (name := self.tk_name.get().strip()) or self.app.lib_db is None:
+        """Search the names of all libraries in a worker thread (millions of names in large libraries)."""
+        if not (name := self.tk_name.get().strip()) or not self.app.lib_dbs:
             return
         self.tk_search_button.state(["disabled"])
         self.tk_search_info.set("searching ...")
-        lib_db, exact = self.app.lib_db, self.tk_exact.get()
+        lib_dbs, exact = dict(self.app.lib_dbs), self.tk_exact.get()
 
         def worker():
             try:
-                f_ids = lib_db.find_by_name(name, substring=not exact)
+                found = [(library_name, lib_db, f_id) for library_name, lib_db in lib_dbs.items()
+                         for f_id in lib_db.find_by_name(name, substring=not exact)]
                 rows = [(f_id, lib_db.names.get(f_id), lib_db.formula_metaboscape.get(f_id), lib_db.adduct.get(f_id),
-                         lib_db.mzs.get(f_id)) for f_id in f_ids[:self.MAX_SEARCH_RESULTS]]
-                result = (len(f_ids), rows, None)
+                         lib_db.mzs.get(f_id), library_name)
+                        for library_name, lib_db, f_id in found[:self.MAX_SEARCH_RESULTS]]
+                result = (len(found), rows, None)
             except Exception as error:
                 result = (0, [], f"{type(error).__name__}: {error}")
             self.app.call_in_main_thread(lambda: self._show_search_results(*result))
@@ -373,9 +382,9 @@ class MzFromCompoundDialog(tk.Toplevel):
         if error_text is not None:
             self.tk_search_info.set(f"search failed: {error_text}")
             return
-        for f_id, name, formula, adduct, mz in rows:
+        for f_id, name, formula, adduct, mz, library_name in rows:
             iid = self.tk_table.insert("", "end", values=(name or "", formula or "", adduct or "",
-                                                          "" if mz is None else f"{mz:.4f}", f_id))
+                                                          "" if mz is None else f"{mz:.4f}", f_id, library_name))
             self.search_results[iid] = (formula, adduct, mz)
         shown = f", showing the first {len(rows)}" if n_found > len(rows) else ""
         self.tk_search_info.set(f"{n_found} compound(s) found{shown}")

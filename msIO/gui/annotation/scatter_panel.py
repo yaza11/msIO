@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 from typing import TYPE_CHECKING
 
 import numpy as np
+from LipidCalculator import CompoundDict
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
@@ -21,6 +22,32 @@ ZOOM_IN_KEYS: set[str] = {"+", "plus", "add", "kp_add"}
 ZOOM_OUT_KEYS: set[str] = {"-", "minus", "subtract", "kp_subtract"}
 # colors of the lines connecting features with marked mass differences (one per entry)
 MASS_DIFFERENCE_COLORS: list[str] = ["C3", "C4", "C5", "C6", "C8", "C9"]
+
+# common diagnostic fragments (ions) and neutral losses of lipid classes (positive ion mode): {lipid class: formula}
+try:
+    from LipidCalculator.compound_groups.common_fragments import (
+        COMMON_DIAGNOSTIC_FRAGMENTS as COMMON_FRAGMENTS, COMMON_DIAGNOSTIC_LOSSES as COMMON_LOSSES
+    )
+except ImportError:  # older LipidCalculator
+    COMMON_FRAGMENTS, COMMON_LOSSES = {}, {}
+
+
+def common_choices(formulas: dict[str, str]) -> dict[str, str]:
+    """
+    Entries of a fragment / loss list: {shown text: inserted formula}, formulas shared by several lipid classes are
+    listed once. Starts with a heading (inserts nothing) if there are any.
+    """
+    classes: dict[str, list[str]] = {}
+    for lipid_class, formula in formulas.items():
+        classes.setdefault(formula, []).append(lipid_class)
+    choices: dict[str, str] = {"── LipidCalculator ──": ""} if classes else {}
+    for formula, lipid_classes in classes.items():
+        try:
+            mass = f"{CompoundDict(formula).mass:.4f}"
+        except Exception:
+            mass = "?"
+        choices[f"{', '.join(lipid_classes)}: {formula}  ({mass})"] = formula
+    return choices
 
 
 class ScatterPanel(CollapsibleSection):
@@ -56,8 +83,11 @@ class ScatterPanel(CollapsibleSection):
         self.annotated_features_markers: list = []  # green / yellow points of annotated features
         self.focus_before_plot: tk.Misc = None  # gets the focus back when the mouse leaves the plot
         # annotated MS2 peaks of the measured database offered in the fragment list: {shown text: inserted value}
+        # followed by the common fragments of LipidCalculator, the losses list holds its common losses
         self.fragment_choices: dict[str, str] = {}
-        self.fragments_text_before_selection: str = ""
+        self.loss_choices: dict[str, str] = common_choices(COMMON_LOSSES)
+        # text of the fragments / losses field when its list is opened, the selected entry is appended to it
+        self.text_before_selection: dict[ttk.Combobox, str] = {}
 
         tk_controls = ttk.Frame(self.body)
         tk_controls.pack(fill="x")
@@ -74,12 +104,17 @@ class ScatterPanel(CollapsibleSection):
         # highlight features with MS2 fragments / neutral losses, entries are m/z values or formulas
         ttk.Label(tk_controls, text="Fragments (a; b)").grid(row=1, column=0, sticky="w", pady=2)
         # can be typed in, the list holds the annotated peaks of the measured database (selecting one appends it)
-        self.tk_fragments_entry = ttk.Combobox(tk_controls, width=22, postcommand=self._remember_fragments_text)
+        self.tk_fragments_entry = ttk.Combobox(tk_controls, width=22, height=20)
         self.tk_fragments_entry.grid(row=1, column=1, sticky="w", padx=(4, 10))
-        self.tk_fragments_entry.bind("<<ComboboxSelected>>", self.on_select_fragment)
         ttk.Label(tk_controls, text="Losses (a; b)").grid(row=1, column=2, sticky="w")
-        self.tk_losses_entry = ttk.Entry(tk_controls, width=22)
+        # can be typed in, the list holds the common losses of LipidCalculator (selecting one appends it)
+        self.tk_losses_entry = ttk.Combobox(tk_controls, width=22, height=20, values=list(self.loss_choices))
         self.tk_losses_entry.grid(row=1, column=3, sticky="w", padx=(4, 10))
+        for tk_combobox, choices in ((self.tk_fragments_entry, lambda: self.fragment_choices),
+                                     (self.tk_losses_entry, lambda: self.loss_choices)):
+            tk_combobox.config(postcommand=lambda c=tk_combobox: self._remember_text(c))
+            tk_combobox.bind("<<ComboboxSelected>>", lambda event, c=tk_combobox, get=choices: self.on_select_choice(
+                c, get()))
         ttk.Label(tk_controls, text="Match").grid(row=1, column=4, sticky="w")
         self.tk_highlight_mode: ttk.Combobox = ttk.Combobox(tk_controls, state="readonly", values=["all", "any"],
                                                             width=4)
@@ -105,6 +140,7 @@ class ScatterPanel(CollapsibleSection):
 
         self.tk_plot_frame = ttk.Frame(self.body)
         self.tk_plot_frame.pack(fill="both", expand=True)
+        self.update_fragment_choices()
 
     # ---- drawing ----------------------------------------------------------------------------------------------------
     def reset(self):
@@ -342,18 +378,19 @@ class ScatterPanel(CollapsibleSection):
                 value = f"{mz:.4f}"
             label = f"{annotation}  (m/z {mz:.4f}, {n_features} feature{'s' if n_features > 1 else ''})"
             self.fragment_choices[label] = value
+        self.fragment_choices |= common_choices(COMMON_FRAGMENTS)
         self.tk_fragments_entry.config(values=list(self.fragment_choices))
 
-    def _remember_fragments_text(self):
+    def _remember_text(self, tk_combobox: ttk.Combobox):
         # the combobox replaces the text with the selected entry, keep what was typed before
-        self.fragments_text_before_selection = self.tk_fragments_entry.get()
+        self.text_before_selection[tk_combobox] = tk_combobox.get()
 
-    def on_select_fragment(self, event=None):
-        """Append the selected annotated fragment to the fragments typed before."""
-        value: str = self.fragment_choices.get(self.tk_fragments_entry.get(), self.tk_fragments_entry.get())
-        before: str = self.fragments_text_before_selection.strip().rstrip(";").strip()
-        self.tk_fragments_entry.set(f"{before}; {value}" if before else value)
-        self.tk_fragments_entry.icursor("end")
+    def on_select_choice(self, tk_combobox: ttk.Combobox, choices: dict[str, str]):
+        """Append the selected fragment / loss to the ones typed before (headings of the list add nothing)."""
+        value: str = choices.get(tk_combobox.get(), tk_combobox.get())
+        before: str = self.text_before_selection.get(tk_combobox, "").strip().rstrip(";").strip()
+        tk_combobox.set(f"{before}; {value}" if before and value else (value or before))
+        tk_combobox.icursor("end")
 
     # ---- mass differences -------------------------------------------------------------------------------------------
     def on_click_mark_mass_differences(self):

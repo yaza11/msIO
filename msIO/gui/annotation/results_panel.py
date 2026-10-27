@@ -33,6 +33,7 @@ class ResultsPanel(CollapsibleSection):
         "RT": ("RT (min)", 60, "e"),
         "ccs_meas": ("CCS (Å²)", 65, "e"),
         "intensity": ("Σ intensity", 80, "e"),
+        "i1_i0": ("I1 / I0", 60, "e"),
         "name": ("Compound name", 180, "w"),
         "formula": ("Formula", 110, "w"),
         "adduct": ("Adduct", 80, "w"),
@@ -43,6 +44,7 @@ class ResultsPanel(CollapsibleSection):
         "dccs_percent": ("ΔCCS (%)", 70, "e"),
         "annotation": ("Annotation", 85, "center"),
         "source_library": ("Source", 150, "w"),
+        "library": ("Library", 150, "w"),
     }
     # columns of the matches table shown instead (formulas that don't fit the measured m/z are in brackets)
     DISPLAY_COLUMNS: dict[str, str] = {"formula": "formula_display"}
@@ -67,7 +69,10 @@ class ResultsPanel(CollapsibleSection):
                                                   selectmode="browse")
         for column, (heading, width, anchor) in self.COLUMNS.items():
             self.tk_tree.heading(column, text=heading, command=lambda c=column: self.on_click_heading(c))
-            self.tk_tree.column(column, width=width, anchor=anchor, stretch=column in ("name", "source_library"))
+            self.tk_tree.column(column, width=width, anchor=anchor,
+                                stretch=column in ("name", "source_library", "library"))
+        # dummy rows only hold the properties of the measured feature
+        self.tk_tree.tag_configure("dummy", foreground="gray40")
         self.tk_tree.bind("<<TreeviewSelect>>", self.on_select)
         self.tk_tree.bind("<ButtonRelease-1>", self.on_release)
         self.tk_tree.bind("<Control-ButtonRelease-1>", self.on_ctrl_release)
@@ -90,6 +95,8 @@ class ResultsPanel(CollapsibleSection):
 
         tk_buttons = ttk.Frame(self.body)
         tk_buttons.pack(fill="x", pady=(5, 0))
+        ttk.Button(tk_buttons, text="Export annotations as library ...",
+                   command=app.on_click_export_library).pack(side="left")
         self.tk_manage_button = ttk.Button(tk_buttons, text="Manage annotations",
                                            command=app.on_click_manage_annotations)
         self.tk_manage_button.pack(side="right")
@@ -111,7 +118,8 @@ class ResultsPanel(CollapsibleSection):
 
         if selected is not None and not self.table.empty:
             is_selected = ((self.table.feature_id_meas == selected.feature_id_meas)
-                           & (self.table.feature_id_lib == selected.feature_id_lib))
+                           & (self.table.feature_id_lib == selected.feature_id_lib)
+                           & (self.table.library == selected.library))
             if is_selected.any():
                 # restoring the selection must not change the overview (e.g. a feature shown from the scatter plot)
                 self._ignore_pending_select_events()
@@ -142,15 +150,21 @@ class ResultsPanel(CollapsibleSection):
         rows: list[list] = cells.where(cells.notna(), "").to_numpy().tolist()
         idx_annotation: int = self.columns.index("annotation")
         annotations: AnnotationStore = self.app.annotations
-        for values, f_id_meas, f_id_lib in zip(rows, table.feature_id_meas, table.feature_id_lib):
-            values[idx_annotation] = annotations.state(annotations.library_key(f_id_meas, f_id_lib))
-            self.tk_tree.insert("", 'end', values=values, tags=(f"feature_{f_id_meas}",))
+        for values, row in zip(rows, table[['feature_id_meas', 'library', 'feature_id_lib', 'is_dummy']].itertuples()):
+            values[idx_annotation] = self._annotation_state(row)
+            tags = (f"feature_{row.feature_id_meas}", "dummy") if row.is_dummy else (f"feature_{row.feature_id_meas}",)
+            self.tk_tree.insert("", 'end', values=values, tags=tags)
+
+    def _annotation_state(self, row) -> str:
+        """State of the annotation with the library match of a row (dummy rows have none)."""
+        if row.is_dummy:
+            return ""
+        annotations: AnnotationStore = self.app.annotations
+        return annotations.state(annotations.library_key(row.feature_id_meas, row.library, row.feature_id_lib))
 
     def refresh_annotation_column(self):
-        annotations: AnnotationStore = self.app.annotations
         for item, row in zip(self.tk_tree.get_children(), self.table.itertuples()):
-            self.tk_tree.set(item, "annotation", annotations.state(
-                annotations.library_key(row.feature_id_meas, row.feature_id_lib)))
+            self.tk_tree.set(item, "annotation", self._annotation_state(row))
 
     def set_unsaved_annotation_count(self, n_changes: int):
         self.tk_manage_button.config(
@@ -163,13 +177,10 @@ class ResultsPanel(CollapsibleSection):
         last, ties keep the default order (as found by the search).
         """
         table = table.sort_values("default_order", kind="mergesort")
-        annotations: AnnotationStore = self.app.annotations
         # stable sorts from the last key to the first one give the sorting by several keys
         for column, descending in reversed(self.sort_keys):
             if column == "annotation":  # not a column of the matches table
-                values = pd.Series([annotations.state(annotations.library_key(f_id_meas, f_id_lib))
-                                    for f_id_meas, f_id_lib in zip(table.feature_id_meas, table.feature_id_lib)],
-                                   index=table.index)
+                values = pd.Series([self._annotation_state(row) for row in table.itertuples()], index=table.index)
             else:
                 values = table[column]
             if values.dtype == object:

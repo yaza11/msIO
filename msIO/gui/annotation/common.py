@@ -121,10 +121,50 @@ def find_feature_pairs(
     return pairs
 
 
+# inputs of the IPL builder when it was last closed or used (session only), shared by all dialogs that open it
+ipl_builder_state: dict = {}
+IPL_BUILDER_VARIABLES: tuple[str, ...] = ("head_var", "head2_var", "core_var", "chains_var", "core_chains_var",
+                                          "core_db_var", "split_var", "sort_var")
+
+
+def save_ipl_builder_state(frame):
+    """Remember the inputs and the selected adduct of the IPL builder."""
+    for name in IPL_BUILDER_VARIABLES:
+        try:
+            ipl_builder_state[name] = getattr(frame, name).get()
+        except tk.TclError:  # e.g. empty number field
+            pass
+    row = frame.table.selected_row()
+    ipl_builder_state["adduct"] = None if row is None else row["Adduct"]
+
+
+def restore_ipl_builder_state(frame):
+    """Fill the IPL builder with the remembered inputs, the structure is built afterwards (after_idle)."""
+    if not ipl_builder_state:
+        return
+    for name in ("head_var", "head2_var", "core_var", "chains_var", "split_var", "sort_var"):
+        if name in ipl_builder_state:
+            getattr(frame, name).set(ipl_builder_state[name])
+    frame._update_chain_state()  # enables the fields of the core and resets its isoprenoid chains and double bonds
+    for name in ("core_chains_var", "core_db_var"):
+        if name in ipl_builder_state:
+            getattr(frame, name).set(ipl_builder_state[name])
+
+    def select_adduct():  # after the build has filled the table
+        tree = frame.table.tree
+        for item in tree.get_children():
+            if tree.set(item, "Adduct") == ipl_builder_state.get("adduct"):
+                tree.selection_set(item)
+                tree.see(item)
+
+    frame.after_idle(lambda: frame.after_idle(select_adduct))
+
+
 def open_ipl_builder(parent: tk.Misc, send_label: str, on_send: Callable[[object, dict, tk.Toplevel], None]):
     """
     Open the IPL builder of LipidCalculator in a window. Its button send_label calls on_send(frame, payload, window),
     the payload holds the neutral formula and the adduct selected in the table of the builder (if any).
+    The inputs from the last time the builder was used (in this session) are restored.
     """
     try:
         from LipidCalculator.gui.ipl_gui import SingleIPLFrame
@@ -136,9 +176,20 @@ def open_ipl_builder(parent: tk.Misc, send_label: str, on_send: Callable[[object
     tk_window.title(f"IPL builder (select an adduct in the table, then \"{send_label}\")")
     tk_window.geometry("1100x750")
     frames: list = []  # the frame doesn't exist yet when the callback is defined
-    frame = SingleIPLFrame(tk_window, send_targets={send_label: lambda payload: on_send(frames[0], payload, tk_window)})
+
+    def send(payload):
+        save_ipl_builder_state(frames[0])
+        on_send(frames[0], payload, tk_window)
+
+    def close():
+        save_ipl_builder_state(frames[0])
+        tk_window.destroy()
+
+    frame = SingleIPLFrame(tk_window, send_targets={send_label: send})
     frames.append(frame)
     frame.pack(fill="both", expand=True)
+    restore_ipl_builder_state(frame)
+    tk_window.protocol("WM_DELETE_WINDOW", close)
 
 
 def pack_canvas(canvas: FigureCanvasTkAgg):

@@ -15,6 +15,7 @@ worker thread. Peak annotations of the MS2 spectra can be changed by the user, t
 plotted peaks so that clicks can be mapped to them.
 """
 
+import os
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -31,8 +32,9 @@ from msIO import PeakList
 from msIO.feature_managers.db import FeatureManagerDB, Library
 from msIO.metrics import cosine_similarity_sym
 
-# identifies a spectrum for user defined peak annotations: ("meas" | "lib", feature id)
-SpectrumKey = tuple[str, int]
+# identifies a spectrum for user defined peak annotations: ("meas", feature id) or ("lib", "library:feature id"),
+# feature ids of different libraries overlap (see library_spectrum_key)
+SpectrumKey = tuple[str, int | str]
 
 # peaks within this distance of the precursor m/z are hidden by the isotope filter
 ISOTOPE_WINDOW_DA: float = 4.
@@ -93,6 +95,16 @@ class LibraryData:
     mz: float | None
     ccs: float | None
     ms2: PeakList | None
+    library: str = ""  # file name of the library
+
+    @property
+    def key(self) -> SpectrumKey:
+        return library_spectrum_key(self.library, self.f_id)
+
+
+def library_spectrum_key(library: str, f_id: int) -> SpectrumKey:
+    """Key of the MS2 spectrum of a library feature."""
+    return "lib", f"{library}:{f_id}" if library else f_id
 
 
 @dataclass
@@ -162,6 +174,7 @@ def gather_library(lib_db: Library, f_id: int) -> LibraryData:
         mz=props.get('mz_meas'),
         ccs=ccs if ccs is not None and ccs > 0 else None,
         ms2=lib_db.get_ms_spectrum(f_id, level=2),
+        library=os.path.basename(lib_db.path_file),
     )
 
 
@@ -354,7 +367,7 @@ def _plot_structure(ax: Axes, data: OverviewData):
         if feature.annotation and data.mode != "match":
             lines.append(f"  annotated: {feature.annotation.get('name')} {feature.annotation.get('adduct') or ''}")
     if (lib := data.library) is not None:
-        lines.append(f"library {lib.f_id}: {lib.formula or ''} {lib.adduct or ''}"
+        lines.append(f"library {lib.f_id} ({lib.library}): {lib.formula or ''} {lib.adduct or ''}"
                      + (f", m/z {lib.mz:.4f}" if lib.mz is not None else ""))
         if lib.ccs is not None and data.features[0].ccs is not None:
             lines.append(f"CCS lib. {lib.ccs:.1f} Å² (Δ {(data.features[0].ccs - lib.ccs) / lib.ccs * 100:+.1f} %)")
@@ -389,7 +402,7 @@ def _plot_ms2_panel(ax: Axes, data: OverviewData, settings: OverviewSettings) ->
     if data.mode == "match" and data.library is not None:
         lib = data.library
         mirror = lib.ms2
-        spectra.append(_plot_ms2(ax, lib.ms2, ("lib", lib.f_id), lib.mz, LIBRARY_COLOR, True, settings))
+        spectra.append(_plot_ms2(ax, lib.ms2, lib.key, lib.mz, LIBRARY_COLOR, True, settings))
         legend.append(Line2D([], [], color=LIBRARY_COLOR, label=f"library {lib.f_id}: {lib.name}"))
         result = data.match_result or {}
         score = result.get('ms2_score')
