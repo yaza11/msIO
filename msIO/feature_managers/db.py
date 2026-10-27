@@ -799,6 +799,56 @@ class FeatureManagerDB:
             )
             return cpd_candidates
 
+    def delete_feature(self, feature_id: int) -> bool:
+        """
+        Delete a feature with everything that belongs to it (MetaboScape, mgf, SIRIUS and GNPS entries, intensities,
+        spectra with their peaks, formula and compound candidates). Annotations of other features that refer to it
+        (e.g. in-source fragments) are kept. Returns False if there is no feature with this id.
+        """
+        from msIO.features.gnps import FeatureGnpsNode
+        from msIO.features.sirius import CompoundGroup
+
+        feature_id = int(feature_id)
+        with self.session_maker() as session:
+            combined_ids = session.execute(
+                select(FeatureCombined.id).where(FeatureCombined.feature_id == feature_id)).scalars().all()
+            if not combined_ids:
+                return False
+
+            def ids_of(column, *where) -> list:
+                return [i for i in session.execute(select(column).where(*where)).scalars().all() if i is not None]
+
+            def delete(model, *where):
+                session.execute(model.__table__.delete().where(*where))
+
+            # sub-features are linked by the id of the combined feature, their children by the feature id
+            metaboscape_f_ids = ids_of(FeatureMetaboScape.feature_id,
+                                       FeatureMetaboScape.combined_feature_id.in_(combined_ids))
+            sirius_f_ids = ids_of(FeatureSirius.feature_id, FeatureSirius.combined_feature_id.in_(combined_ids))
+            mgf_ids = ids_of(FeatureMgf.id, FeatureMgf.combined_feature_id.in_(combined_ids))
+            peak_list_ids = set(ids_of(MsSpec.peaks_id, MsSpec.feature_mgf_id.in_(mgf_ids)))
+            peak_list_ids |= set(ids_of(FeatureMgf.ms1_id, FeatureMgf.id.in_(mgf_ids)))
+            peak_list_ids |= set(ids_of(FeatureMgf.ms2_id, FeatureMgf.id.in_(mgf_ids)))
+
+            delete(Intensity, Intensity.feature_id.in_(metaboscape_f_ids))
+            for model in (FormulaCandidate, CompoundCandidate, CompoundGroup):
+                delete(model, model.feature_id.in_(sirius_f_ids))
+            delete(MsSpec, MsSpec.feature_mgf_id.in_(mgf_ids))
+            delete(PeakFeature, PeakFeature.peak_list_id.in_(peak_list_ids))
+            delete(PeakList, PeakList.id.in_(peak_list_ids))
+            for model in (FeatureMetaboScape, FeatureSirius, FeatureMgf, FeatureGnpsNode):
+                delete(model, model.combined_feature_id.in_(combined_ids))
+            delete(FeatureCombined, FeatureCombined.id.in_(combined_ids))
+            session.commit()
+
+        # cached values (feature ids, m/z, ...) are computed again when needed
+        for cls in type(self).__mro__:
+            for name, attr in vars(cls).items():
+                if isinstance(attr, cached_property):
+                    self.__dict__.pop(name, None)
+        self._mzs_sorted = self._f_ids_sorted = None
+        return True
+
     def remove_annotations_by_id(self, compound_candidate_ids: Iterable[int]):
         """Delete manual annotations by the ids of their compound candidates."""
         with self.session_maker() as session:
