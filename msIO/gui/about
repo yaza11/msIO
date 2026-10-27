@@ -1,0 +1,15 @@
+This tool allows you to make library and algorithm supported annotations.
+
+
+Suggested strategy for making annotations:
+1. A grain of truth: Start with high-certainty annotations:
+    I. only consider compounds that have been reported before
+    II. only consider annotations that have a high MS2 similarity score (around 0.7)
+    III. only consider annotations that have a decent number of matched MS2 peaks (this depends on the compound and the library, but generally more than 3)
+2. Adducts: Using the mass difference tool, look for features with other adducts
+3. Connect the dots: Look for features for systematic modifications (e.g., additional isoprenoid units, variations in double bonds, rings), in the m/z vs. RT plot these should roughly form a line.
+4. Expand the search by allowing lower scores: more information is needed to be certain about annotations, try to always relate annotations to already existing ones about which you are sure.
+5. Red herrings: Be aware of potential in-source-fragments. head-less compounds eluting earlier, are potential candidates. They likely have
+6. Don't lose your head: focus on head group modifications (compounds with head should elute earlier on reverse phase columns). Marking certain neutral losses, can help
+7. Sudoku: Head group changes and chain modifications should roughly form lines, in combination they define a grid. Try to fill in the grid.
+8. Fragment hunting: From the features annotated so far, mark down characteristic fragments. Mark them and investigate whether they could stem from similar compounds.
