@@ -65,6 +65,8 @@ MS1_ARROW_STEP: float = 0.17
 FEATURE_COLORS: tuple[str, str] = ("C2", "C1")  # same as the compared features in the scatter plot
 LIBRARY_COLOR: str = "C3"
 THEORETICAL_COLOR: str = "C7"
+# plots of the overview, OverviewSettings.panels selects the shown ones
+OVERVIEW_PANELS: tuple[str, ...] = ("ms2", "ms1", "intensities", "structure")
 
 
 @dataclass
@@ -109,6 +111,8 @@ class OverviewSettings:
     # mass accuracy of the theoretical isotope pattern
     ms1_tolerance_da: float = 0.003
     peak_annotations: dict[SpectrumKey, dict[float, str]] = field(default_factory=dict)
+    # plots to draw, see OVERVIEW_PANELS
+    panels: tuple[str, ...] = ("ms2", "ms1", "intensities", "structure")
 
 
 @dataclass
@@ -374,50 +378,77 @@ def _describe_differences(first: FeatureData, second: FeatureData) -> str:
     return "\n".join(lines)
 
 
-def build_overview_figure(fig: Figure, data: OverviewData, settings: OverviewSettings) -> list[PlottedSpectrum]:
-    """Draw the overview into fig, returns the plotted MS2 spectra (for clickable peaks)."""
-    # the bottom margin leaves room for the sample names of the intensity plot
-    gs = GridSpec(3, 2, figure=fig, width_ratios=[2, 1], height_ratios=[1.3, 1, 1], hspace=0.6, wspace=0.15,
-                  left=0.07, right=0.98, top=0.95, bottom=0.17)
-    ax_ms2 = fig.add_subplot(gs[0, :])
-    ax_ms1 = fig.add_subplot(gs[1, 0])
-    ax_intensities = fig.add_subplot(gs[2, 0])
-    ax_structure = fig.add_subplot(gs[1:, 1])
-
-    # MS2: first feature on top, library match or second feature as mirror
+def _plot_ms2_panel(ax: Axes, data: OverviewData, settings: OverviewSettings) -> list[PlottedSpectrum]:
+    """MS2: first feature on top, library match or second feature as mirror. Returns the plotted spectra."""
     first = data.features[0]
     spectra: list[PlottedSpectrum | None] = [
-        _plot_ms2(ax_ms2, first.ms2, ("meas", first.f_id), first.mz, FEATURE_COLORS[0], False, settings)
+        _plot_ms2(ax, first.ms2, ("meas", first.f_id), first.mz, FEATURE_COLORS[0], False, settings)
     ]
     legend: list[Line2D] = [Line2D([], [], color=FEATURE_COLORS[0], label=f"feature {first.f_id}")]
     mirror: PeakList | None = None
     if data.mode == "match" and data.library is not None:
         lib = data.library
         mirror = lib.ms2
-        spectra.append(_plot_ms2(ax_ms2, lib.ms2, ("lib", lib.f_id), lib.mz, LIBRARY_COLOR, True, settings))
+        spectra.append(_plot_ms2(ax, lib.ms2, ("lib", lib.f_id), lib.mz, LIBRARY_COLOR, True, settings))
         legend.append(Line2D([], [], color=LIBRARY_COLOR, label=f"library {lib.f_id}: {lib.name}"))
         result = data.match_result or {}
         score = result.get('ms2_score')
-        ax_ms2.set_title(f"MS2 score: {score:.3f} ({result.get('n_hits_ms2')} peaks matched)"
-                         if score is not None and not np.isnan(score) else "MS2 (no score)", fontsize=10)
+        ax.set_title(f"MS2 score: {score:.3f} ({result.get('n_hits_ms2')} peaks matched)"
+                     if score is not None and not np.isnan(score) else "MS2 (no score)", fontsize=10)
     elif data.mode == "comparison" and len(data.features) > 1:
         second = data.features[1]
         mirror = second.ms2
-        spectra.append(_plot_ms2(ax_ms2, second.ms2, ("meas", second.f_id), second.mz, FEATURE_COLORS[1], True,
+        spectra.append(_plot_ms2(ax, second.ms2, ("meas", second.f_id), second.mz, FEATURE_COLORS[1], True,
                                  settings))
         legend.append(Line2D([], [], color=FEATURE_COLORS[1], label=f"feature {second.f_id}"))
         if first.ms2 is not None and second.ms2 is not None:
             score, n_hits = cosine_similarity_sym(first.ms2, second.ms2, settings.ms2_tolerance_da, return_nhits=True)
-            ax_ms2.set_title(f"Symmetric cosine similarity: {score:.3f} ({n_hits} peaks matched)", fontsize=10)
+            ax.set_title(f"Symmetric cosine similarity: {score:.3f} ({n_hits} peaks matched)", fontsize=10)
     else:
-        ax_ms2.set_title(f"MS2 of feature {first.f_id}", fontsize=10)
-    ax_ms2.axhline(0, color="black", linewidth=0.5)
-    ax_ms2.set_ylim(-1.35 if mirror is not None else 0, 1.35)
-    ax_ms2.set_xlabel("m/z")
-    ax_ms2.set_ylabel("Relative intensity")
-    ax_ms2.legend(handles=legend, loc="upper left", fontsize=8)
-
-    _plot_ms1(ax_ms1, data, settings)
-    _plot_intensities(ax_intensities, data)
-    _plot_structure(ax_structure, data)
+        ax.set_title(f"MS2 of feature {first.f_id}", fontsize=10)
+    ax.axhline(0, color="black", linewidth=0.5)
+    ax.set_ylim(-1.35 if mirror is not None else 0, 1.35)
+    ax.set_xlabel("m/z")
+    ax.set_ylabel("Relative intensity")
+    ax.legend(handles=legend, loc="upper left", fontsize=8)
     return [spectrum for spectrum in spectra if spectrum is not None]
+
+
+def build_overview_figure(fig: Figure, data: OverviewData, settings: OverviewSettings) -> list[PlottedSpectrum]:
+    """
+    Draw the overview into fig, returns the plotted MS2 spectra (for clickable peaks).
+
+    Only the plots in settings.panels are drawn: MS2 on top over the full width, below MS1 and intensities on the
+    left and the structure on the right (each of them takes the space of hidden ones).
+    """
+    shown: list[str] = [panel for panel in OVERVIEW_PANELS if panel in settings.panels]
+    if not shown:
+        fig.text(0.5, 0.5, "all plots are hidden", ha="center", va="center", color="gray")
+        return []
+    with_ms2: bool = "ms2" in shown
+    left: list[str] = [panel for panel in ("ms1", "intensities") if panel in shown]
+    with_structure: bool = "structure" in shown
+    n_lower_rows: int = max(len(left), int(with_structure))
+    n_columns: int = 2 if left and with_structure else 1
+    # the bottom margin leaves room for the sample names of the intensity plot and the text below the structure
+    gs = GridSpec(
+        int(with_ms2) + n_lower_rows, n_columns, figure=fig,
+        width_ratios=[2, 1] if n_columns == 2 else None,
+        height_ratios=([1.3] if with_ms2 else []) + [1] * n_lower_rows,
+        hspace=0.6, wspace=0.15, left=0.07, right=0.98, top=0.95,
+        bottom=0.17 if "intensities" in shown or with_structure else 0.08
+    )
+
+    spectra: list[PlottedSpectrum] = []
+    if with_ms2:
+        spectra = _plot_ms2_panel(fig.add_subplot(gs[0, :]), data, settings)
+    first_lower_row: int = int(with_ms2)
+    for row, panel in enumerate(left, start=first_lower_row):
+        ax = fig.add_subplot(gs[row, 0])
+        if panel == "ms1":
+            _plot_ms1(ax, data, settings)
+        else:
+            _plot_intensities(ax, data)
+    if with_structure:
+        _plot_structure(fig.add_subplot(gs[first_lower_row:, 1 if left else 0]), data)
+    return spectra
