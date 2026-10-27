@@ -161,11 +161,12 @@ def gather_library(lib_db: Library, f_id: int) -> LibraryData:
     )
 
 
-def _filter_isotope_peaks(mzs: np.ndarray, intensities: np.ndarray, precursor_mz: float | None, hide: bool):
+def _filter_isotope_peaks(mzs: np.ndarray, intensities: np.ndarray, annotations: np.ndarray,
+                          precursor_mz: float | None, hide: bool):
     if not hide or precursor_mz is None:
-        return mzs, intensities
+        return mzs, intensities, annotations
     keep = np.abs(mzs - precursor_mz) > ISOTOPE_WINDOW_DA
-    return mzs[keep], intensities[keep]
+    return mzs[keep], intensities[keep], annotations[keep]
 
 
 def _plot_ms2(
@@ -177,14 +178,18 @@ def _plot_ms2(
         as_mirror: bool,
         settings: OverviewSettings
 ) -> PlottedSpectrum | None:
-    """Stem plot normalized to 1 (negative for mirror), peaks above the cutoff or with an annotation are labelled."""
+    """
+    Stem plot normalized to 1 (negative for mirror). Peaks annotated by the user (stored in a measured spectrum or set
+    in this session, settings.peak_annotations) are always labelled. Other peaks above the cutoff are labelled with
+    the annotation of the library spectrum (e.g. "-H2O", every peak of some libraries has one) or their m/z.
+    """
     if spectrum is None or len(spectrum.mzs) == 0:
         ax.text(0.5, 0.25 if as_mirror else 0.75, f"no MS2 spectrum for {'library ' if key[0] == 'lib' else ''}"
                 f"feature {key[1]}", transform=ax.transAxes, ha="center", color=color)
         return None
-    mzs, intensities = _filter_isotope_peaks(
-        np.asarray(spectrum.mzs, dtype=float), np.asarray(spectrum.intensities, dtype=float), precursor_mz,
-        settings.hide_isotope_peaks
+    mzs, intensities, stored_annotations = _filter_isotope_peaks(
+        np.asarray(spectrum.mzs, dtype=float), np.asarray(spectrum.intensities, dtype=float),
+        np.asarray(spectrum.annotations, dtype=object), precursor_mz, settings.hide_isotope_peaks
     )
     if len(mzs) == 0:
         return None
@@ -192,14 +197,16 @@ def _plot_ms2(
     ax.vlines(mzs, 0, heights, colors=color, linewidth=1)
 
     user_annotations: dict[float, str] = settings.peak_annotations.get(key, {})
-    for mz, height in zip(mzs, heights):
-        label = user_annotations.get(peak_key(mz))
-        if label is None:
+    # annotations stored in measured spectra are set by the user (see AnnotationGUI.on_click_overview)
+    stored_by_user: bool = key[0] == "meas"
+    for mz, height, stored in zip(mzs, heights, stored_annotations):
+        label = user_annotations.get(peak_key(mz)) or (stored if stored_by_user else None)
+        if not label:
             if abs(height) < settings.annotation_cutoff:
                 continue
-            label = f"{mz:.4f}"
+            label = stored or f"{mz:.4f}"
         ax.annotate(label, xy=(mz, height), ha="center", va="top" if as_mirror else "bottom", rotation=90,
-                    fontsize=7, color="black" if peak_key(mz) in user_annotations else "dimgray")
+                    fontsize=7, color="dimgray" if label == f"{mz:.4f}" else "black")
     return PlottedSpectrum(key=key, ax=ax, mzs=mzs, heights=heights)
 
 
@@ -212,7 +219,7 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
     relative: bool = data.mode == "comparison"
     formula, adduct = _get_formula_adduct(data)
     handles: list = []
-    # distance arrows are stacked above the spectra (one level per arrow, all features)
+    # distance arrows above the spectra, two levels per feature: neighboring peaks and every second peak
     level: int = 0
     for feature, color in zip(data.features, FEATURE_COLORS):
         if feature.ms1 is None or len(feature.ms1.mzs) == 0:
@@ -227,24 +234,32 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
         ax.vlines(mzs - offset, 0, heights, colors=color, linewidth=2)
         handles.append(Line2D([], [], color=color, label=f"feature {feature.f_id}"))
 
-        # monoisotopic peak: closest to the precursor m/z
-        idx_mono: int = int(np.argmin(np.abs(mzs - feature.mz)))
-        mz_mono, height_mono = mzs[idx_mono], heights[idx_mono]
-        # horizontal double arrow from the monoisotopic peak to each peak, labelled with the distance
-        for mz, height in sorted(zip(mzs, heights), key=lambda peak: abs(peak[0] - mz_mono)):
-            if height < MS1_LABEL_CUTOFF or mz == mz_mono:
-                continue
-            distance = mz - mz_mono
+        # labelled peaks sorted by m/z, the monoisotopic peak is the one closest to the precursor m/z
+        order = np.argsort(mzs)
+        peaks = [(mz, height) for mz, height in zip(mzs[order], heights[order]) if height >= MS1_LABEL_CUTOFF]
+        if len(peaks) < 2:
+            continue
+        idx_mono: int = int(np.argmin([abs(mz - feature.mz) for mz, _ in peaks]))
+        y_neighbors: float = MS1_ARROW_BASE + level * MS1_ARROW_STEP
+        y_second: float = y_neighbors + MS1_ARROW_STEP
+        level += 2
+        # lower level: neighboring peaks, upper level: every second peak counted from the monoisotopic one
+        # (M -> M+2, M+2 -> M+4, ...), these arrows don't overlap
+        pairs = [(i, i + 1, y_neighbors) for i in range(len(peaks) - 1)]
+        pairs += [(i, i + 2, y_second) for i in range(idx_mono % 2, len(peaks) - 2, 2)]
+        # dotted guides from the peaks up to their highest arrow
+        y_top = {i: y for _, i, y in sorted(pairs, key=lambda pair: pair[2])}
+        y_top |= {i: max(y, y_top.get(i, 0)) for i, _, y in pairs}
+        ax.vlines([peaks[i][0] - offset for i in y_top], [peaks[i][1] for i in y_top], list(y_top.values()),
+                  colors=color, linewidth=0.5, linestyles="dotted")
+        for i, j, y in pairs:
+            (mz_a, _), (mz_b, _) = peaks[i], peaks[j]
+            distance = mz_b - mz_a
             known = [KNOWN_ISOTOPE_LABELS[name] for name, d in KNOWN_ISOTOPE_DISTANCES.items()
                      if abs(distance - d) <= KNOWN_DISTANCE_TOLERANCE_DA]
-            y: float = MS1_ARROW_BASE + level * MS1_ARROW_STEP
-            level += 1
-            # dotted guides from both peaks up to their arrow
-            ax.vlines([mz_mono - offset, mz - offset], [height_mono, height], y, colors=color, linewidth=0.5,
-                      linestyles="dotted")
-            ax.annotate("", xy=(mz - offset, y), xytext=(mz_mono - offset, y),
+            ax.annotate("", xy=(mz_b - offset, y), xytext=(mz_a - offset, y),
                         arrowprops=dict(arrowstyle="<->", color=color, linewidth=0.8, shrinkA=0, shrinkB=0))
-            ax.text((mz + mz_mono) / 2 - offset, y, f"{abs(distance):.4f}" + (f" ({', '.join(known)})" if known else ""),
+            ax.text((mz_a + mz_b) / 2 - offset, y, f"{distance:.4f}" + (f" ({', '.join(known)})" if known else ""),
                     ha="center", va="bottom", fontsize=7, color=color)
 
     window = (data.features[0].mz - MS1_WINDOW_DA[0], data.features[0].mz + MS1_WINDOW_DA[1])
@@ -253,11 +268,11 @@ def _plot_ms1(ax: Axes, data: OverviewData, settings: OverviewSettings):
             pattern = IsotopePattern.from_formula(formula=formula, adduct=adduct, mass_accuracy=settings.ms1_tolerance_da,
                                                   merge_method='weighted_average')
             masses, intensities = np.asarray(pattern.masses), np.asarray(pattern.intensities)
-            # a bit narrower and dashed, so that the measured peaks stay visible below
-            ax.vlines(masses, 0, intensities / intensities.max(), colors=THEORETICAL_COLOR, linewidth=1,
-                      linestyles="dashed")
-            handles.append(Line2D([], [], color=THEORETICAL_COLOR, linestyle="dashed",
-                                  label=f"theoretical {formula} {adduct}"))
+            # short horizontal markers at the theoretical intensity, the measured peaks stay visible below
+            ax.plot(masses, intensities / intensities.max(), linestyle="none", marker="_", markersize=18,
+                    markeredgewidth=2.5, color=THEORETICAL_COLOR, zorder=3)
+            handles.append(Line2D([], [], linestyle="none", marker="_", markersize=12, markeredgewidth=2.5,
+                                  color=THEORETICAL_COLOR, label=f"theoretical {formula} {adduct}"))
             if not window[0] < masses[np.argmax(intensities)] < window[1]:
                 ax.text(0.02, 0.95, f"theoretical pattern at m/z {masses[np.argmax(intensities)]:.4f} (outside)",
                         transform=ax.transAxes, fontsize=7, va="top")
@@ -339,7 +354,24 @@ def _plot_structure(ax: Axes, data: OverviewData):
                      + (f", m/z {lib.mz:.4f}" if lib.mz is not None else ""))
         if lib.ccs is not None and data.features[0].ccs is not None:
             lines.append(f"CCS lib. {lib.ccs:.1f} Å² (Δ {(data.features[0].ccs - lib.ccs) / lib.ccs * 100:+.1f} %)")
+    if data.mode == "comparison" and len(data.features) > 1:
+        lines.append(_describe_differences(*data.features[:2]))
     ax.text(0.5, 0.0, "\n".join(lines), transform=ax.transAxes, ha="center", va="top", fontsize=8, wrap=True)
+
+
+def _describe_differences(first: FeatureData, second: FeatureData) -> str:
+    """
+    Differences of two compared features (second - first): m/z (Da, ppm), RT (min) and CCS (Å², %), one per line
+    (the summary column is narrow).
+    """
+    dmz = second.mz - first.mz
+    lines = [f"feature {second.f_id} - {first.f_id}:", f"Δm/z {dmz:+.4f} Da ({dmz / first.mz * 1e6:+.1f} ppm)"]
+    if first.rt_min is not None and second.rt_min is not None:
+        lines.append(f"ΔRT {second.rt_min - first.rt_min:+.2f} min")
+    if first.ccs is not None and second.ccs is not None:
+        dccs = second.ccs - first.ccs
+        lines.append(f"ΔCCS {dccs:+.1f} Å² ({dccs / first.ccs * 100:+.1f} %)")
+    return "\n".join(lines)
 
 
 def build_overview_figure(fig: Figure, data: OverviewData, settings: OverviewSettings) -> list[PlottedSpectrum]:

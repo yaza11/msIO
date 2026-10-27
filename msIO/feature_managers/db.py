@@ -525,6 +525,40 @@ class FeatureManagerDB:
         # fetch ms spectrum sql file for specified feature id and level (1 for isotope pattern, 2 for fragment spectrum)
         return self.get_ms_spectra([feature_id], level, **kwargs).get(feature_id)
 
+    def set_peak_annotation(self, feature_id: int, level: int, mz: float, annotation: str | None) -> int:
+        """
+        Set the annotation of the peak at mz (4 decimals) in the spectrum of a feature, None removes it.
+        Returns the number of changed peaks.
+        """
+        with self.session_maker() as session:
+            peaks_ids = (
+                select(MsSpec.peaks_id)
+                .join(FeatureMgf, FeatureMgf.id == MsSpec.feature_mgf_id)
+                .where(FeatureMgf.feature_id == int(feature_id), MsSpec.ms_level == int(level))
+            )
+            result = session.execute(
+                PeakFeature.__table__.update()
+                .where(PeakFeature.peak_list_id.in_(peaks_ids), func.round(PeakFeature.mz, 4) == round(float(mz), 4))
+                .values(annotation=annotation)
+            )
+            session.commit()
+            return result.rowcount
+
+    def get_peak_annotations(self, level: int = 2) -> list[tuple[str, float, int]]:
+        """
+        Distinct annotations of peaks (positive m/z) in the spectra of the given level:
+        (annotation, mean m/z, number of features), most frequent first.
+        """
+        stmt = (
+            select(PeakFeature.annotation, func.avg(PeakFeature.mz), func.count(func.distinct(MsSpec.feature_mgf_id)))
+            .join(MsSpec, MsSpec.peaks_id == PeakFeature.peak_list_id)
+            .where(MsSpec.ms_level == int(level), PeakFeature.annotation.is_not(None), PeakFeature.annotation != '',
+                   PeakFeature.mz > 0)
+            .group_by(PeakFeature.annotation)
+            .order_by(func.count(func.distinct(MsSpec.feature_mgf_id)).desc(), PeakFeature.annotation)
+        )
+        return self._fetch_rows(stmt)
+
     def get_intensities(self, feature_id) -> dict[str, int]:
         """
         Returns a dict mapping sample names to intensities for the given

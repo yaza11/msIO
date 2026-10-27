@@ -135,6 +135,26 @@ def parse_mass_differences(text: str) -> list[tuple[str, Callable[[np.ndarray], 
     return differences
 
 
+def open_ipl_builder(parent: tk.Misc, send_label: str, on_send: Callable[[object, dict, tk.Toplevel], None]):
+    """
+    Open the IPL builder of LipidCalculator in a window. Its button send_label calls on_send(frame, payload, window),
+    the payload holds the neutral formula and the adduct selected in the table of the builder (if any).
+    """
+    try:
+        from LipidCalculator.gui.ipl_gui import SingleIPLFrame
+    except Exception as error:
+        messagebox.showerror("IPL builder", f"The IPL builder of LipidCalculator is not available:\n{error}",
+                             parent=parent)
+        return
+    tk_window = tk.Toplevel(parent)
+    tk_window.title(f"IPL builder (select an adduct in the table, then \"{send_label}\")")
+    tk_window.geometry("1100x750")
+    frames: list = []  # the frame doesn't exist yet when the callback is defined
+    frame = SingleIPLFrame(tk_window, send_targets={send_label: lambda payload: on_send(frames[0], payload, tk_window)})
+    frames.append(frame)
+    frame.pack(fill="both", expand=True)
+
+
 def find_feature_pairs(
         f_ids: np.ndarray,
         rts: np.ndarray,
@@ -208,9 +228,9 @@ class AnnotationGUI:
         self.matches: dict[int, list[dict]] = {}
         self.matches_table: pd.DataFrame = pd.DataFrame()
         self.filtered_matches_table: pd.DataFrame = pd.DataFrame()
-        # sorting of the results table (clicked column header), kept when the filters change
-        self.sort_column: str = None
-        self.sort_descending: bool = False
+        # sorting of the results table: (column, descending) per clicked header, the first one is the primary key,
+        # kept when the filters change; empty: default order
+        self.sort_keys: list[tuple[str, bool]] = []
 
         # filters are applied while typing, after a short pause
         self.live_filter_delay_ms: int = 300
@@ -242,6 +262,9 @@ class AnnotationGUI:
         self.peak_annotations: dict[SpectrumKey, dict[float, str]] = {}
         # set while selection events caused by the program are pending, see _ignore_pending_table_select_events
         self.ignore_table_select: bool = False
+        # annotated MS2 peaks of the measured database offered in the fragment list: {shown text: inserted value}
+        self.fragment_choices: dict[str, str] = {}
+        self.fragments_text_before_selection: str = ""
 
         # scatter plot (m/z vs RT) of the measurement
         self.scatter_canvas: FigureCanvasTkAgg = None
@@ -277,15 +300,10 @@ class AnnotationGUI:
     def _create_gui(self):
         """
         Layout:
-            top:    database selection | matching parameters
-            middle: filters, results table, annotation buttons | match overview above scatter plot
+            left:   database selection, matching parameters, filters, results table, annotation buttons
+            right:  overview above scatter plot (full height)
             bottom: status bar
         """
-        tk_top_frame = ttk.Frame(self.tk_root)
-        tk_top_frame.pack(fill="x", padx=10, pady=(10, 5))
-        self._create_database_selection(tk_top_frame)
-        self._create_matching_parameters(tk_top_frame)
-
         # status bar is packed before the main area, so it keeps its space when the window shrinks
         tk_status_bar = ttk.Frame(self.tk_root, relief="sunken")
         tk_status_bar.pack(side="bottom", fill="x")
@@ -297,10 +315,12 @@ class AnnotationGUI:
         self.tk_progress = ttk.Progressbar(tk_status_bar, mode="determinate", maximum=100, length=250)
 
         tk_main_area = ttk.PanedWindow(self.tk_root, orient="horizontal")
-        tk_main_area.pack(fill="both", expand=True, padx=10, pady=5)
+        tk_main_area.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
         tk_results_pane = ttk.Frame(tk_main_area)
         tk_main_area.add(tk_results_pane, weight=1)
+        self._create_database_selection(tk_results_pane)
+        self._create_matching_parameters(tk_results_pane)
         self._create_filters(tk_results_pane)
         self._create_matches_table(tk_results_pane)
         self._create_annotation_buttons(tk_results_pane)
@@ -322,20 +342,21 @@ class AnnotationGUI:
         tk_main_area.bind("<Configure>", set_initial_dividers)
 
     def _create_database_selection(self, parent):
-        tk_database_frame = ttk.LabelFrame(parent, text="Databases", padding=10)
-        tk_database_frame.pack(side="left", fill="y", padx=(0, 10))
+        tk_database_frame = ttk.LabelFrame(parent, text="Databases", padding=(10, 5))
+        tk_database_frame.pack(fill="x", pady=(0, 5))
 
         ttk.Label(tk_database_frame, text="Measured database").grid(row=0, column=0, sticky="w")
-        ttk.Entry(tk_database_frame, textvariable=self.tk_meas_path, width=45).grid(row=0, column=1, padx=5, pady=2)
+        ttk.Entry(tk_database_frame, textvariable=self.tk_meas_path).grid(row=0, column=1, padx=5, pady=2, sticky="ew")
         ttk.Button(tk_database_frame, text="Browse", command=self.on_browse_meas_db).grid(row=0, column=2)
 
         ttk.Label(tk_database_frame, text="Library database").grid(row=1, column=0, sticky="w")
-        ttk.Entry(tk_database_frame, textvariable=self.tk_lib_path, width=45).grid(row=1, column=1, padx=5, pady=2)
+        ttk.Entry(tk_database_frame, textvariable=self.tk_lib_path).grid(row=1, column=1, padx=5, pady=2, sticky="ew")
         ttk.Button(tk_database_frame, text="Browse", command=self.on_browse_lib_db).grid(row=1, column=2)
+        tk_database_frame.columnconfigure(1, weight=1)
 
     def _create_matching_parameters(self, parent):
-        tk_parameter_frame = ttk.LabelFrame(parent, text="Matching parameters", padding=10)
-        tk_parameter_frame.pack(side="left", fill="both", expand=True)
+        tk_parameter_frame = ttk.LabelFrame(parent, text="Matching parameters", padding=(10, 5))
+        tk_parameter_frame.pack(fill="x", pady=(0, 5))
 
         def add_entry(row: int, column: int, label: str, variable: tk.Variable):
             ttk.Label(tk_parameter_frame, text=label).grid(row=row, column=column, sticky="w", padx=(10, 4), pady=2)
@@ -388,19 +409,22 @@ class AnnotationGUI:
             tk_entry.grid(row=row, column=4 * group + 1, columnspan=3, sticky="ew")
             return tk_entry
 
+        # left: properties of the measured features, right: properties of the matches
         self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas = add_range_filter(0, 0, "Meas. feature ID")
-        self.tk_filter_min_rt, self.tk_filter_max_rt = add_range_filter(0, 1, "RT (min)")
-        self.tk_filter_min_mz, self.tk_filter_max_mz = add_range_filter(1, 0, "m/z")
-        self.tk_filter_subformula = add_filter(1, 1, "Formula contains")
-        self.tk_filter_name = add_filter(2, 0, "Name contains (a; b)")
-        self.tk_filter_min_ms2_score = add_filter(2, 1, "Min. MS2 score")
-        self.tk_filter_min_n_hits_ms2 = add_filter(3, 0, "Min. #MS2 peak matches")
-        self.tk_filter_min_ccs, self.tk_filter_max_ccs = add_range_filter(3, 1, "CCS (Å²)")
+        self.tk_filter_min_rt, self.tk_filter_max_rt = add_range_filter(1, 0, "RT (min)")
+        self.tk_filter_min_ccs, self.tk_filter_max_ccs = add_range_filter(2, 0, "CCS (Å²)")
+        self.tk_filter_min_mz, self.tk_filter_max_mz = add_range_filter(3, 0, "m/z")
         self.tk_filter_min_intensity, self.tk_filter_max_intensity = add_range_filter(4, 0, "Σ intensity")
+        self.tk_filter_min_ms2_score = add_filter(0, 1, "Min. MS2 score")
+        self.tk_filter_min_n_hits_ms2 = add_filter(1, 1, "Min. #MS2 peak matches")
+        self.tk_filter_subformula = add_filter(2, 1, "Formula contains")
+        self.tk_filter_name = add_filter(3, 1, "Name contains (a; b)")
 
-        ttk.Button(tk_filter_frame, text="Remove filters", command=self.on_click_remove_filters).grid(
-            row=4, column=4, columnspan=4, sticky="e"
-        )
+        tk_filter_buttons = ttk.Frame(tk_filter_frame)
+        tk_filter_buttons.grid(row=4, column=4, columnspan=4, sticky="e")
+        ttk.Button(tk_filter_buttons, text="m/z from compound ...", command=self.on_click_mz_from_compound).pack(
+            side="left", padx=(0, 5))
+        ttk.Button(tk_filter_buttons, text="Remove filters", command=self.on_click_remove_filters).pack(side="left")
 
         self.tk_filter_entries: list[ttk.Entry] = [
             self.tk_filter_min_f_id_meas, self.tk_filter_max_f_id_meas, self.tk_filter_name,
@@ -449,6 +473,10 @@ class AnnotationGUI:
             self.tk_matches_table.column(column, width=width, anchor=anchor, stretch=column in ("name", "source_library"))
         self.tk_matches_table.bind("<<TreeviewSelect>>", self.on_select_table_row)
         self.tk_matches_table.bind("<ButtonRelease-1>", self.on_release_table)
+        self.tk_matches_table.bind("<Control-ButtonRelease-1>", self.on_ctrl_release_table)
+        self.tk_matches_table.bind("<Shift-Button-1>", self.on_shift_click_table)
+        # the release of a shift+click must not show the match of the selected row (on_release_table)
+        self.tk_matches_table.bind("<Shift-ButtonRelease-1>", lambda event: "break")
 
         # treeview cells can't be selected, so copying works with Ctrl+C (selected row) and a context menu
         self.tk_table_menu = tk.Menu(self.tk_matches_table, tearoff=False)
@@ -526,8 +554,10 @@ class AnnotationGUI:
 
         # highlight features with MS2 fragments / neutral losses, entries are m/z values or formulas
         ttk.Label(tk_controls, text="Fragments (a; b)").grid(row=1, column=0, sticky="w", pady=2)
-        self.tk_fragments_entry = ttk.Entry(tk_controls, width=22)
+        # can be typed in, the list holds the annotated peaks of the measured database (selecting one appends it)
+        self.tk_fragments_entry = ttk.Combobox(tk_controls, width=22, postcommand=self._remember_fragments_text)
         self.tk_fragments_entry.grid(row=1, column=1, sticky="w", padx=(4, 10))
+        self.tk_fragments_entry.bind("<<ComboboxSelected>>", self.on_select_fragment)
         ttk.Label(tk_controls, text="Losses (a; b)").grid(row=1, column=2, sticky="w")
         self.tk_losses_entry = ttk.Entry(tk_controls, width=22)
         self.tk_losses_entry.grid(row=1, column=3, sticky="w", padx=(4, 10))
@@ -604,7 +634,8 @@ class AnnotationGUI:
         self.compared_f_ids = []
         self.last_clicked_f_id = None
         self.mass_difference_pairs = []
-        self.draw_scatter_plot()
+        self.draw_scatter_plot(keep_view=False)
+        self._update_fragment_choices()
 
         self.tk_status_field.config(text=f"Measured database loaded, loading MS2 spectra ...: {path}")
         threading.Thread(
@@ -653,7 +684,25 @@ class AnnotationGUI:
             return
         self.tk_lib_path.set(path)
         self.tk_status_field.config(text=f"Library database loaded: {path}")
+        self._clear_results_of_previous_library()
         self._offer_missing_indexes(self.lib_db)
+
+    def _clear_results_of_previous_library(self):
+        """Matches refer to library feature ids of the previous library, so they can't be shown with the new one."""
+        if self.meas_db is None:
+            return
+        self.matches = {}
+        self.matches_table = pd.DataFrame(columns=self.table_columns + ['feature_id_lib', 'formula_display',
+                                                                         'default_order'])
+        self.filtered_matches_table = self.matches_table.copy()
+        self._clear_matches_table()
+        self.mark_filtered_features()
+        if self.shown_overview is not None and self.shown_overview[0] == "match":
+            self.match_panel_request += 1  # drops a match overview that is still being built
+            self.pending_overview = None
+            self.shown_overview = None
+            self.overview_data = self.overview_spectra = None
+            self._destroy_match_plot()
 
     def _offer_missing_indexes(self, db: FeatureManagerDB):
         """
@@ -840,7 +889,7 @@ class AnnotationGUI:
         Runs in the search worker, so the databases are passed in instead of using the current ones.
         """
         if not any(matches.values()):  # lib_match_result_to_table can't handle that
-            return pd.DataFrame(columns=self.table_columns + ['feature_id_lib', 'formula_display'])
+            return pd.DataFrame(columns=self.table_columns + ['feature_id_lib', 'formula_display', 'default_order'])
         table: pd.DataFrame = lib_match_result_to_table(matches)
         f_ids_meas: pd.Series = table.feature_id_meas
         table.loc[:, 'ms2_score'] = table['ms2_score'].round(3)
@@ -862,6 +911,8 @@ class AnnotationGUI:
             has_formula, np.where(fits_mz, table.formula, '(' + table.formula + ')'), ''
         )
         table['mz_meas'] = mzs_meas.round(4)
+        # order of the search result, restored when the sorting is removed (see _sort_matches)
+        table['default_order'] = np.arange(len(table))
         return table
 
     @staticmethod
@@ -985,6 +1036,25 @@ class AnnotationGUI:
         self.last_filter_values = self._get_filter_values()
         self.apply_filters(show_dialogs=False)
 
+    def get_precursor_tolerance_da(self, mz: float) -> float:
+        """Precursor m/z tolerance in Da at mz: the stricter of the ppm and mDa tolerance (as in the search)."""
+        return min(self.tk_max_dmz_mda.get() * 1e-3, self.tk_max_dmz_ppm.get() * 1e-6 * mz)
+
+    def set_mz_filter(self, mz: float):
+        """Filter the results to measured features at mz (± precursor tolerance)."""
+        tolerance: float = self.get_precursor_tolerance_da(mz)
+        for tk_entry, value in ((self.tk_filter_min_mz, mz - tolerance), (self.tk_filter_max_mz, mz + tolerance)):
+            tk_entry.delete(0, tk.END)
+            tk_entry.insert(0, f"{value:.4f}")
+        self.last_filter_values = self._get_filter_values()
+        self.apply_filters()
+
+    def on_click_mz_from_compound(self):
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return
+        MzFromCompoundDialog(self)
+
     def on_click_remove_filters(self):
         """Empty all filter fields and show all matches."""
         for tk_entry in self.tk_filter_entries:
@@ -1004,10 +1074,10 @@ class AnnotationGUI:
         return "library", int(f_id_meas), str(int(f_id_lib))
 
     def _set_filtered_matches_table(self, table: pd.DataFrame):
-        """Sort (by the clicked column) and show the filtered matches, the selected match stays selected."""
+        """Sort (by the clicked columns) and show the filtered matches, the selected match stays selected."""
         selected = self._get_selected_match()
-        if self.sort_column is not None and not table.empty:
-            table = self._sort_matches(table, self.sort_column, self.sort_descending)
+        if not table.empty:
+            table = self._sort_matches(table, self.sort_keys)
         self.filtered_matches_table = table.reset_index(drop=True)
         self._show_matches_in_table(self.filtered_matches_table)
         self.mark_filtered_features()
@@ -1022,30 +1092,66 @@ class AnnotationGUI:
                 self.tk_matches_table.selection_set(item)
                 self.tk_matches_table.see(item)
 
-    def _sort_matches(self, table: pd.DataFrame, column: str, descending: bool) -> pd.DataFrame:
-        """Sort matches by a table column, text case-insensitive, missing values last."""
-        if column == "annotation":  # not a column of the matches table
-            values = pd.Series([self._get_annotation_state(self._library_annotation_key(f_id_meas, f_id_lib))
-                                for f_id_meas, f_id_lib in zip(table.feature_id_meas, table.feature_id_lib)],
-                               index=table.index)
-        else:
-            values = table[column]
-        if values.dtype == object:
-            values = values.astype(str).str.lower()
-        # stable sort, so rows with equal values keep their order (e.g. grouped by measured feature)
-        order = values.sort_values(ascending=not descending, na_position="last", kind="mergesort").index
-        return table.loc[order]
+    def _sort_matches(self, table: pd.DataFrame, sort_keys: list[tuple[str, bool]]) -> pd.DataFrame:
+        """
+        Sort matches by (column, descending) pairs, the first one is the primary key. Text is sorted case-insensitive,
+        missing values last, ties keep the default order (as found by the search).
+        """
+        table = table.sort_values("default_order", kind="mergesort")
+        # stable sorts from the last key to the first one give the sorting by several keys
+        for column, descending in reversed(sort_keys):
+            if column == "annotation":  # not a column of the matches table
+                values = pd.Series([self._get_annotation_state(self._library_annotation_key(f_id_meas, f_id_lib))
+                                    for f_id_meas, f_id_lib in zip(table.feature_id_meas, table.feature_id_lib)],
+                                   index=table.index)
+            else:
+                values = table[column]
+            if values.dtype == object:
+                values = values.astype(str).str.lower()
+            table = table.loc[values.sort_values(ascending=not descending, na_position="last", kind="mergesort").index]
+        return table
 
-    def on_click_table_heading(self, column: str):
-        """Sort the results table by the clicked column, clicking the same column again reverses the order."""
-        if column == self.sort_column:
-            self.sort_descending = not self.sort_descending
+    def on_click_table_heading(self, column: str, secondary: bool = False):
+        """
+        Click on a column header: sort by it, ascending -> descending -> default order.
+        Ctrl+click (secondary): add the column as further sort key (same cycle for that key).
+        """
+        keys: list[tuple[str, bool]] = self.sort_keys
+        position = next((i for i, (c, _) in enumerate(keys) if c == column), None)
+        if not secondary or not keys:
+            if position == 0:  # primary key: reverse, then back to the default order
+                self.sort_keys = [(column, True)] + keys[1:] if not keys[0][1] else []
+            else:
+                self.sort_keys = [(column, False)]
+        elif position is None:
+            self.sort_keys = keys + [(column, False)]
+        elif not keys[position][1]:
+            self.sort_keys = keys[:position] + [(column, True)] + keys[position + 1:]
         else:
-            self.sort_column, self.sort_descending = column, False
+            self.sort_keys = keys[:position] + keys[position + 1:]
+
+        numbered: bool = len(self.sort_keys) > 1
+        arrows = {c: (" ▼" if descending else " ▲") + (str(i + 1) if numbered else "")
+                  for i, (c, descending) in enumerate(self.sort_keys)}
         for c, heading in self.table_headings.items():
-            arrow = (" ▼" if self.sort_descending else " ▲") if c == column else ""
-            self.tk_matches_table.heading(c, text=heading + arrow)
+            self.tk_matches_table.heading(c, text=heading + arrows.get(c, ""))
         self._set_filtered_matches_table(self.filtered_matches_table)
+
+    def on_ctrl_release_table(self, event):
+        """Ctrl+click on a column header: further sort key."""
+        if self.tk_matches_table.identify_region(event.x, event.y) != "heading":
+            return None
+        column: str = self.table_columns[int(self.tk_matches_table.identify_column(event.x)[1:]) - 1]
+        self.on_click_table_heading(column, secondary=True)
+        return "break"  # don't invoke the normal sorting of the header
+
+    def on_shift_click_table(self, event):
+        """Shift+click on a row: add its measured feature to the comparison (like shift+click in the scatter plot)."""
+        if not (item := self.tk_matches_table.identify_row(event.y)):
+            return None
+        row = self.filtered_matches_table.iloc[self.tk_matches_table.index(item)]
+        self.add_feature_to_comparison(int(row.feature_id_meas))
+        return "break"  # keep the selection
 
     def _show_matches_in_table(self, table: pd.DataFrame):
         """Replace the rows of the results table, rows of the same measured feature share a background color."""
@@ -1532,20 +1638,52 @@ class AnnotationGUI:
             return
 
         mz: float = float(spectrum.mzs[idx])
-        annotations: dict[float, str] = self.peak_annotations.setdefault(spectrum.key, {})
-        source = "library feature" if spectrum.key[0] == "lib" else "feature"
+        source, f_id = spectrum.key
+        if source == "meas":
+            # measured spectra: the annotation is stored in the measured database (and in the loaded spectra)
+            peaks = self._get_loaded_peaks(f_id, mz)
+            current: str = next((peak.annotation for peak in peaks if peak.annotation), "")
+            where = "stored in the measured database"
+        else:
+            # library spectra are not changed, the annotation is only kept in this session
+            current = self.peak_annotations.get(spectrum.key, {}).get(peak_key(mz), "")
+            where = "only for this session"
         text = simpledialog.askstring(
-            "Peak annotation", f"Annotation of the peak at m/z {mz:.4f} ({source} {spectrum.key[1]}),\n"
+            "Peak annotation", f"Annotation of the peak at m/z {mz:.4f} "
+                               f"({'library feature' if source == 'lib' else 'feature'} {f_id}, {where}),\n"
                                f"empty to show the m/z again:",
-            initialvalue=annotations.get(peak_key(mz), ""), parent=self.tk_root
+            initialvalue=current, parent=self.tk_root
         )
         if text is None:  # cancelled
             return
-        if text.strip():
-            annotations[peak_key(mz)] = text.strip()
+        annotation: str | None = text.strip() or None
+        if source == "meas":
+            try:
+                self.meas_db.set_peak_annotation(f_id, 2, mz, annotation)
+            except Exception as error:
+                messagebox.showerror("Peak annotation", f"Could not store the annotation:\n{error}")
+                return
+            for peak in peaks:
+                peak.annotation = annotation
+            self._update_fragment_choices()
+        elif annotation:
+            self.peak_annotations.setdefault(spectrum.key, {})[peak_key(mz)] = annotation
         else:
-            annotations.pop(peak_key(mz), None)
+            self.peak_annotations.get(spectrum.key, {}).pop(peak_key(mz), None)
         self.redraw_overview()
+
+    def _get_loaded_peaks(self, f_id: int, mz: float) -> list:
+        """Peaks at mz of the MS2 spectra of a measured feature that are loaded (overview and cache of all spectra)."""
+        spectra = [feature.ms2 for feature in (self.overview_data.features if self.overview_data else [])
+                   if feature.f_id == f_id]
+        if self.ms2_spectra is not None:
+            spectra.append(self.ms2_spectra.get(f_id))
+        peaks: dict[int, object] = {}  # by id, the overview usually uses the spectrum of the cache
+        for spectrum in spectra:
+            for peak in (spectrum.peaks if spectrum is not None else []):
+                if peak_key(peak.mz) == peak_key(mz):
+                    peaks[id(peak)] = peak
+        return list(peaks.values())
 
     def on_change_annotation_cutoff(self, value: str):
         """Slider moved: update the label right away, redraw once the slider rests."""
@@ -1612,8 +1750,14 @@ class AnnotationGUI:
         self.mass_difference_lines = []
         self.annotated_features_markers = []
 
-    def draw_scatter_plot(self):
-        """(Re)draw the scatter plot of the measurement including annotations, highlights and markers."""
+    def draw_scatter_plot(self, keep_view: bool = True):
+        """
+        (Re)draw the scatter plot of the measurement including annotations, highlights and markers.
+        With keep_view, the zoomed / panned region of the previous plot is kept (not for a new database).
+        """
+        view = None
+        if keep_view and self.scatter_ax is not None:
+            view = self.scatter_ax.get_xlim(), self.scatter_ax.get_ylim()
         self._destroy_scatter_plot()
 
         fig = Figure(figsize=(7, 6))
@@ -1648,6 +1792,12 @@ class AnnotationGUI:
             self.mark_selected_feature(int(match.feature_id_meas))
         self.mark_compared_features()
         self.mark_mass_differences()
+        if view is not None:
+            # the full view first, so that the home button of the toolbar still shows all features
+            self.scatter_toolbar.push_current()
+            self.scatter_ax.set_xlim(*view[0])
+            self.scatter_ax.set_ylim(*view[1])
+            self.scatter_toolbar.push_current()
         self.scatter_canvas.draw()
 
     def redraw_scatter_plot(self):
@@ -1706,6 +1856,34 @@ class AnnotationGUI:
             text=f"Highlighted {len(self.highlighted_f_ids)} features with {mode} of {searched} "
                  f"(peaks above {min_intensity:g})."
         )
+
+    def _update_fragment_choices(self):
+        """Fill the fragment list with the annotated MS2 peaks of the measured database, most frequent first."""
+        self.fragment_choices = {}
+        try:
+            annotations = self.meas_db.get_peak_annotations(level=2) if self.meas_db is not None else []
+        except Exception:  # e.g. not an msIO database
+            annotations = []
+        for annotation, mz, n_features in annotations:
+            try:  # formulas (e.g. C5H15NO4P+) are inserted as they are, other names as their m/z
+                parse_masses(annotation)
+                value = annotation
+            except ValueError:
+                value = f"{mz:.4f}"
+            label = f"{annotation}  (m/z {mz:.4f}, {n_features} feature{'s' if n_features > 1 else ''})"
+            self.fragment_choices[label] = value
+        self.tk_fragments_entry.config(values=list(self.fragment_choices))
+
+    def _remember_fragments_text(self):
+        # the combobox replaces the text with the selected entry, keep what was typed before
+        self.fragments_text_before_selection = self.tk_fragments_entry.get()
+
+    def on_select_fragment(self, event=None):
+        """Append the selected annotated fragment to the fragments typed before."""
+        value: str = self.fragment_choices.get(self.tk_fragments_entry.get(), self.tk_fragments_entry.get())
+        before: str = self.fragments_text_before_selection.strip().rstrip(";").strip()
+        self.tk_fragments_entry.set(f"{before}; {value}" if before else value)
+        self.tk_fragments_entry.icursor("end")
 
     def on_click_remove_highlight(self):
         self.highlighted_f_ids = None
@@ -1880,7 +2058,8 @@ class AnnotationGUI:
 
     def on_click_scatter(self, event):
         """
-        Click: overview of the closest feature, its best match in the results table is selected.
+        Click: select the best match of the closest feature in the results table and show it, features without
+        matches (in the filtered table) are shown alone.
         Shift-click: add the closest feature to the comparison (the oldest of two is replaced).
         """
         # ignore clicks outside the axes or while zooming / panning with the toolbar
@@ -1897,8 +2076,13 @@ class AnnotationGUI:
             return
 
         self.clear_comparison()
-        self.select_best_match_in_table(closest_f_id, show_match=False)
-        self.show_feature(closest_f_id)
+        # the overview is requested here, the selection event isn't generated if the row was already selected
+        if self.select_best_match_in_table(closest_f_id, show_match=False):
+            match = self._get_selected_match()
+            self.mark_selected_feature(closest_f_id)
+            self.request_overview("match", [closest_f_id], int(match.feature_id_lib))
+        else:
+            self.show_feature(closest_f_id)
 
     def select_best_match_in_table(self, f_id_meas: int, show_match: bool = True) -> bool:
         """
@@ -2163,22 +2347,7 @@ class ManualAnnotationDialog(tk.Toplevel):
 
     def on_click_build_ipl(self):
         """Open the IPL builder of LipidCalculator, its "Use for annotation" button fills this dialog."""
-        try:
-            from LipidCalculator.gui.ipl_gui import SingleIPLFrame
-        except Exception as error:
-            messagebox.showerror(
-                "IPL builder", f"The IPL builder of LipidCalculator is not available:\n{error}", parent=self
-            )
-            return
-        tk_window = tk.Toplevel(self)
-        tk_window.title("IPL builder (select an adduct in the table, then \"Use for annotation\")")
-        tk_window.geometry("1100x750")
-        frames: list = []
-        frame = SingleIPLFrame(tk_window, send_targets={
-            "Use for annotation": lambda payload: self._use_ipl(frames[0], payload, tk_window)
-        })
-        frames.append(frame)
-        frame.pack(fill="both", expand=True)
+        open_ipl_builder(self, "Use for annotation", self._use_ipl)
 
     def _use_ipl(self, frame, payload: dict, tk_window: tk.Toplevel):
         """Take name, formula, SMILES and the selected adduct (if any) from the IPL builder."""
@@ -2221,6 +2390,169 @@ class ManualAnnotationDialog(tk.Toplevel):
             else f"Feature {f_id_meas} is already annotated as {name} {adduct or ''}."
         )
         self.destroy()
+
+
+class MzFromCompoundDialog(tk.Toplevel):
+    """
+    Dialog to set the m/z filter of the results table from a compound: searched by name in the library, built with
+    the IPL builder of LipidCalculator or entered as formula and adduct. The filter is m/z ± precursor tolerance.
+    """
+
+    MAX_SEARCH_RESULTS: int = 500
+
+    def __init__(self, gui: AnnotationGUI):
+        super().__init__(gui.tk_root)
+        self.gui: AnnotationGUI = gui
+        self.title("m/z filter from compound")
+        self.geometry("800x560")
+        self.tk_name = tk.StringVar(self)
+        self.tk_exact = tk.BooleanVar(self, value=False)
+        self.tk_search_info = tk.StringVar(self)
+        self.tk_formula = tk.StringVar(self)
+        self.tk_adduct = tk.StringVar(self, value="[M+H]+")
+        self.tk_mz = tk.StringVar(self)
+        self.tk_range_info = tk.StringVar(self)
+        # library search results: {row id in the table: (formula, adduct, m/z of the library)}
+        self.search_results: dict[str, tuple[str | None, str | None, float | None]] = {}
+
+        tk_search = ttk.LabelFrame(self, text="Search the library by name", padding=8)
+        tk_search.pack(fill="both", expand=True, padx=10, pady=(10, 5))
+        tk_search_bar = ttk.Frame(tk_search)
+        tk_search_bar.pack(fill="x")
+        tk_name_entry = ttk.Entry(tk_search_bar, textvariable=self.tk_name, width=40)
+        tk_name_entry.pack(side="left")
+        tk_name_entry.bind("<Return>", lambda event: self.on_click_search())
+        ttk.Checkbutton(tk_search_bar, text="exact name", variable=self.tk_exact).pack(side="left", padx=8)
+        self.tk_search_button = ttk.Button(tk_search_bar, text="Search", command=self.on_click_search)
+        self.tk_search_button.pack(side="left")
+        ttk.Label(tk_search_bar, textvariable=self.tk_search_info, foreground="gray").pack(side="left", padx=8)
+
+        tk_table_frame = ttk.Frame(tk_search)
+        tk_table_frame.pack(fill="both", expand=True, pady=(5, 0))
+        columns: dict[str, tuple[str, int, str]] = {
+            "name": ("Name", 330, "w"), "formula": ("Formula", 140, "w"), "adduct": ("Adduct", 90, "w"),
+            "mz": ("m/z", 90, "e"), "f_id": ("Lib. ID", 70, "center"),
+        }
+        self.tk_table = ttk.Treeview(tk_table_frame, columns=list(columns), show="headings", selectmode="browse",
+                                     height=10)
+        for column, (heading, width, anchor) in columns.items():
+            self.tk_table.heading(column, text=heading)
+            self.tk_table.column(column, width=width, anchor=anchor, stretch=column == "name")
+        self.tk_table.bind("<<TreeviewSelect>>", self.on_select_result)
+        y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_table.yview)
+        self.tk_table.configure(yscrollcommand=y_scroll.set)
+        self.tk_table.pack(side="left", fill="both", expand=True)
+        y_scroll.pack(side="left", fill="y")
+
+        tk_compound = ttk.LabelFrame(self, text="Compound (from the search, the IPL builder or typed in)", padding=8)
+        tk_compound.pack(fill="x", padx=10, pady=5)
+        ttk.Label(tk_compound, text="Formula (neutral)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(tk_compound, textvariable=self.tk_formula, width=24).grid(row=0, column=1, sticky="w", padx=(4, 12))
+        ttk.Label(tk_compound, text="Adduct").grid(row=0, column=2, sticky="w")
+        ttk.Combobox(tk_compound, textvariable=self.tk_adduct, values=ADDUCTS, width=14).grid(
+            row=0, column=3, sticky="w", padx=(4, 12))
+        ttk.Button(tk_compound, text="Build IPL ...", command=self.on_click_build_ipl).grid(row=0, column=4)
+        ttk.Label(tk_compound, text="m/z").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(tk_compound, textvariable=self.tk_mz, width=14).grid(row=1, column=1, sticky="w", padx=(4, 12),
+                                                                       pady=(6, 0))
+        ttk.Label(tk_compound, textvariable=self.tk_range_info, foreground="gray").grid(
+            row=1, column=2, columnspan=3, sticky="w", pady=(6, 0))
+        for variable in (self.tk_formula, self.tk_adduct):
+            variable.trace_add("write", lambda *_: self._calculate_mz())
+        self.tk_mz.trace_add("write", lambda *_: self._update_range_info())
+
+        tk_buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
+        tk_buttons.pack(fill="x")
+        ttk.Button(tk_buttons, text="Close", command=self.destroy).pack(side="right")
+        ttk.Button(tk_buttons, text="Apply m/z filter", command=self.on_click_apply).pack(side="right", padx=5)
+
+        if self.gui.lib_db is None:
+            self.tk_search_button.state(["disabled"])
+            self.tk_search_info.set("load a library database to search it")
+        tk_name_entry.focus_set()
+
+    def _calculate_mz(self) -> bool:
+        """m/z from formula and adduct, False if they can't be parsed (the m/z field is left as it is)."""
+        try:
+            mz = Adduct(self.tk_adduct.get().strip()).mass_to_mz(CompoundDict(self.tk_formula.get().strip()).mass)
+        except Exception:
+            return False
+        self.tk_mz.set(f"{mz:.4f}")
+        return True
+
+    def _update_range_info(self):
+        try:
+            mz = float(self.tk_mz.get())
+            tolerance = self.gui.get_precursor_tolerance_da(mz)
+        except (ValueError, tk.TclError):
+            self.tk_range_info.set("")
+            return
+        self.tk_range_info.set(f"filter: {mz - tolerance:.4f} - {mz + tolerance:.4f} (± {tolerance * 1e3:.2f} mDa, "
+                               f"precursor tolerance)")
+
+    def on_click_search(self):
+        """Search the library names in a worker thread (millions of names in large libraries)."""
+        if not (name := self.tk_name.get().strip()) or self.gui.lib_db is None:
+            return
+        self.tk_search_button.state(["disabled"])
+        self.tk_search_info.set("searching ...")
+        lib_db, exact = self.gui.lib_db, self.tk_exact.get()
+
+        def worker():
+            try:
+                f_ids = lib_db.find_by_name(name, substring=not exact)
+                rows = [(f_id, lib_db.names.get(f_id), lib_db.formula_metaboscape.get(f_id), lib_db.adduct.get(f_id),
+                         lib_db.mzs.get(f_id)) for f_id in f_ids[:self.MAX_SEARCH_RESULTS]]
+                result = (len(f_ids), rows, None)
+            except Exception as error:
+                result = (0, [], f"{type(error).__name__}: {error}")
+            self.gui._call_in_main_thread(lambda: self._show_search_results(*result))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_search_results(self, n_found: int, rows: list[tuple], error_text: str | None):
+        if not self.winfo_exists():  # closed meanwhile
+            return
+        self.tk_search_button.state(["!disabled"])
+        self.tk_table.delete(*self.tk_table.get_children())
+        self.search_results = {}
+        if error_text is not None:
+            self.tk_search_info.set(f"search failed: {error_text}")
+            return
+        for f_id, name, formula, adduct, mz in rows:
+            iid = self.tk_table.insert("", "end", values=(name or "", formula or "", adduct or "",
+                                                          "" if mz is None else f"{mz:.4f}", f_id))
+            self.search_results[iid] = (formula, adduct, mz)
+        shown = f", showing the first {len(rows)}" if n_found > len(rows) else ""
+        self.tk_search_info.set(f"{n_found} compound(s) found{shown}")
+
+    def on_select_result(self, event=None):
+        """Take formula and adduct of the selected compound, the library m/z if they can't be parsed."""
+        if not (selection := self.tk_table.selection()):
+            return
+        formula, adduct, mz = self.search_results[selection[0]]
+        self.tk_formula.set(formula or "")
+        self.tk_adduct.set(adduct or "")
+        if not self._calculate_mz() and mz is not None:
+            self.tk_mz.set(f"{mz:.4f}")
+
+    def on_click_build_ipl(self):
+        open_ipl_builder(self, "Use for m/z filter", self._use_ipl)
+
+    def _use_ipl(self, frame, payload: dict, tk_window: tk.Toplevel):
+        self.tk_formula.set(payload["formula"])
+        if payload.get("adduct"):
+            self.tk_adduct.set(payload["adduct"])
+        tk_window.destroy()
+        self.lift()
+
+    def on_click_apply(self):
+        try:
+            mz = float(self.tk_mz.get())
+        except ValueError:
+            messagebox.showerror("Invalid input", "Enter or select a compound with a valid m/z.", parent=self)
+            return
+        self.gui.set_mz_filter(mz)
 
 
 class InSourceFragmentDialog(tk.Toplevel):
