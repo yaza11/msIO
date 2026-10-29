@@ -6,8 +6,9 @@ Workflow:
        The scatter plot (m/z vs RT) of the measurement is drawn right away, the MS2 spectra of the measurement and
        the feature properties shown in the table (incl. I1 / I0 from the MS1 spectra) are loaded in the background.
     2. Set the matching parameters and click "Find Matches".
-    3. Narrow down the results table with the filters (applied while typing), limit the rows per feature and add a
-       dummy row per feature (only the feature properties, also for features without matches). Clicking a
+    3. Narrow down the results table with the filters (applied while typing, number fields take intervals like
+       400-500; 512.3±0.01), limit the rows per feature and add a dummy row per feature (only the feature
+       properties, also for features without matches). Clicking a
        feature in the scatter plot selects its best match in the table. In the scatter plot, features with specific
        MS2 fragments or neutral losses can be highlighted and pairs of features with
        specific mass differences (e.g. adduct exchanges) can be connected.
@@ -17,7 +18,8 @@ Workflow:
        MS1 spectrum, intensities in the samples and the structure (see feature_overview).
     5. Collect annotations in a local list: library matches ("Add library match"),
        compounds entered by hand or built with the LipidCalculator IPL builder ("Add manual
-       annotation") and in-source fragments of other features ("Mark in-source fragment").
+       annotation") and relations to other features: in-source fragments, duplicates, isotope peaks and other
+       adducts ("Mark fragment / duplicate / isotope / adduct"), which can be hidden from the table.
        "Manage annotations" opens a window to review new and existing annotations and to
        write the changes to the measured database. "Export annotations as library" writes the annotated features to
        a new database that can be loaded as library.
@@ -43,7 +45,7 @@ from msIO.gui.annotation.annotations import AnnotationStore
 from msIO.gui.annotation.common import SQLITE_FILE_TYPES, AnnotationKey
 from msIO.gui.annotation.database_panel import DatabasePanel
 from msIO.gui.annotation.dialogs import (
-    AnnotationManagerWindow, InSourceFragmentDialog, ManualAnnotationDialog, MzFromCompoundDialog
+    AnnotationManagerWindow, FeatureRelationDialog, ManualAnnotationDialog, MzFromCompoundDialog
 )
 from msIO.gui.annotation.export import EXPORTED_KINDS, write_annotations_as_library
 from msIO.gui.annotation.filter_panel import FilterError, FilterPanel
@@ -554,7 +556,7 @@ class AnnotationGUI:
         except tk.TclError:
             messagebox.showerror("Invalid input", "Check the precursor tolerances.")
             return
-        self.filters.set_mz_range(mz - tolerance, mz + tolerance)
+        self.filters.set_mz_interval(mz, tolerance)
         self.apply_filters()
 
     def on_click_mz_from_compound(self):
@@ -631,16 +633,19 @@ class AnnotationGUI:
             return
         ManualAnnotationDialog(self, self._get_current_feature())
 
-    def on_click_mark_in_source_fragment(self):
-        """Open the in-source fragment dialog, prefilled with the compared features (lower m/z = fragment)."""
+    def on_click_mark_relation(self, kind: str = "in_source_fragment"):
+        """
+        Open the dialog to mark a feature as in-source fragment, duplicate, isotope peak or adduct of another one,
+        prefilled with the compared features (the dialog orders them by m/z for fragments and isotope peaks).
+        """
         if self.meas_db is None:
             messagebox.showerror("Error", "Please load a measured database first.")
             return
         if len(self.compared_f_ids) == 2:
-            f_id_fragment, f_id_parent = sorted(self.compared_f_ids, key=lambda f_id: self.meas_db.mzs[f_id])
+            f_id, f_id_reference = sorted(self.compared_f_ids, key=lambda f_id_: self.meas_db.mzs[f_id_])
         else:
-            f_id_fragment, f_id_parent = self._get_current_feature(), None
-        InSourceFragmentDialog(self, f_id_fragment, f_id_parent)
+            f_id, f_id_reference = self._get_current_feature(), None
+        return FeatureRelationDialog(self, f_id, f_id_reference, kind=kind)
 
     def toggle_annotations(self, keys: list[AnnotationKey], keep: bool = None):
         """Mark annotations to keep or discard (keep=None toggles each of them)."""
@@ -670,6 +675,8 @@ class AnnotationGUI:
 
     def _on_annotations_changed(self):
         """Update everything that shows annotation states: table column, button text, manager window, scatter plot."""
+        if self.filters.tk_hide_related.get():  # the hidden features changed
+            self.apply_filters(show_empty_message=False, show_dialogs=False)
         self.results.refresh_annotation_column()
         self.results.set_unsaved_annotation_count(sum(len(keys) for keys in self.annotations.unsaved_changes()))
         if self.annotation_window is not None:

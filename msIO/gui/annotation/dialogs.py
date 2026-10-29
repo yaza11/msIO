@@ -8,7 +8,10 @@ from typing import TYPE_CHECKING
 import pandas as pd
 from LipidCalculator import Adduct, CompoundDict
 
-from msIO.gui.annotation.common import ADDUCTS, ANNOTATION_KIND_LABELS, AnnotationKey, open_ipl_builder
+from msIO.gui.annotation.common import (
+    ADDUCTS, ANNOTATION_KIND_LABELS, FEATURE_RELATIONS, AnnotationKey, open_ipl_builder
+)
+from msIO.gui.annotation.matching import C13_DISTANCE
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -18,7 +21,7 @@ class AnnotationManagerWindow(tk.Toplevel):
     """
     Window to review manual annotations before writing them to the measured database.
 
-    Lists new annotations (library matches, manual annotations, in-source fragments) and the ones
+    Lists new annotations (library matches, manual annotations, relations to other features) and the ones
     already in the database. Each can be kept or discarded; "Write to database" adds the kept new
     ones and removes the discarded ones from the database. The state lives in AnnotationGUI.annotations,
     so closing this window doesn't lose any changes.
@@ -136,7 +139,9 @@ class AnnotationManagerWindow(tk.Toplevel):
             return ""
         if kind == "library":
             return f"{info.get('library_name') or 'lib.'}: {reference}"
-        return f"parent {reference}"
+        if kind in FEATURE_RELATIONS:
+            return f"{FEATURE_RELATIONS[kind][2].lower()} {reference}"
+        return str(reference)
 
     def on_double_click(self, event):
         if iid := self.tk_table.identify_row(event.y):
@@ -418,85 +423,200 @@ class MzFromCompoundDialog(tk.Toplevel):
         self.app.set_mz_filter(mz)
 
 
-class InSourceFragmentDialog(tk.Toplevel):
+class FeatureRelationDialog(tk.Toplevel):
     """
-    Dialog to annotate a measured feature as in-source fragment of another one.
+    Dialog to mark a measured feature as in-source fragment, duplicate, isotope peak or other adduct of another measured
+    feature (the reference: parent, original, monoisotopic peak or feature of the main adduct).
 
-    Shows the differences in m/z and RT of both features and the marked mass differences connecting them.
+    Shows the differences in m/z, RT and CCS of both features and what fits them: the marked mass differences
+    (in-source fragments), the number of 13C (isotope peaks) or pairs of adducts (adducts).
     """
 
-    def __init__(self, app: "AnnotationGUI", f_id_fragment: int | None, f_id_parent: int | None):
+    def __init__(self, app: "AnnotationGUI", f_id: int | None, f_id_reference: int | None,
+                 kind: str = "in_source_fragment"):
         super().__init__(app.tk_root)
         self.app: "AnnotationGUI" = app
-        self.title("Mark in-source fragment")
+        self.title("Mark relation between features")
         self.resizable(True, False)
-        self.tk_fragment = tk.StringVar(self, value="" if f_id_fragment is None else str(f_id_fragment))
-        self.tk_parent = tk.StringVar(self, value="" if f_id_parent is None else str(f_id_parent))
+        self.tk_kind = tk.StringVar(self, value=kind)
+        self.tk_feature = tk.StringVar(self, value="" if f_id is None else str(f_id))
+        self.tk_reference = tk.StringVar(self, value="" if f_id_reference is None else str(f_id_reference))
+        self.tk_adduct = tk.StringVar(self)
+        self.tk_adduct_reference = tk.StringVar(self)
         self.tk_note = tk.StringVar(self)
         self.tk_info = tk.StringVar(self)
+        self.tk_feature_label = tk.StringVar(self)
+        self.tk_reference_label = tk.StringVar(self)
+        # last suggested note, replaced by the next suggestion unless it was edited
+        self.suggested_note: str = ""
 
         tk_form = ttk.Frame(self, padding=10)
         tk_form.pack(fill="x")
-        ttk.Label(tk_form, text="Fragment feature ID").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=2)
-        ttk.Entry(tk_form, textvariable=self.tk_fragment, width=12).grid(row=0, column=1, sticky="w")
-        ttk.Button(tk_form, text="Swap", command=self.on_click_swap).grid(row=0, column=2, rowspan=2, padx=8)
-        ttk.Label(tk_form, text="Parent feature ID").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
-        ttk.Entry(tk_form, textvariable=self.tk_parent, width=12).grid(row=1, column=1, sticky="w")
-        ttk.Label(tk_form, text="Note (optional)").grid(row=2, column=0, sticky="w", padx=(0, 8), pady=2)
-        ttk.Entry(tk_form, textvariable=self.tk_note, width=40).grid(row=2, column=1, columnspan=2, sticky="w")
+        tk_kinds = ttk.Frame(tk_form)
+        tk_kinds.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
+        for relation_kind, (label, _, _) in FEATURE_RELATIONS.items():
+            ttk.Radiobutton(tk_kinds, text=label, value=relation_kind, variable=self.tk_kind,
+                            command=self.on_change_kind).pack(side="left", padx=(0, 10))
+        ttk.Label(tk_form, textvariable=self.tk_feature_label).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_feature, width=12).grid(row=1, column=1, sticky="w")
+        ttk.Button(tk_form, text="Swap", command=self.on_click_swap).grid(row=1, column=2, rowspan=2, padx=8)
+        ttk.Label(tk_form, textvariable=self.tk_reference_label).grid(row=2, column=0, sticky="w", padx=(0, 8),
+                                                                      pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_reference, width=12).grid(row=2, column=1, sticky="w")
+        # adducts of both features, only for the relation "adduct"
+        self.tk_adducts = ttk.Frame(tk_form)
+        self.tk_adducts.grid(row=3, column=0, columnspan=4, sticky="w", pady=2)
+        ttk.Label(self.tk_adducts, text="Adducts: feature").pack(side="left", padx=(0, 4))
+        ttk.Combobox(self.tk_adducts, textvariable=self.tk_adduct, values=ADDUCTS, width=14).pack(side="left")
+        ttk.Label(self.tk_adducts, text="of reference").pack(side="left", padx=4)
+        ttk.Combobox(self.tk_adducts, textvariable=self.tk_adduct_reference, values=ADDUCTS, width=14).pack(
+            side="left")
+        ttk.Label(tk_form, text="Note (optional)").grid(row=4, column=0, sticky="w", padx=(0, 8), pady=2)
+        ttk.Entry(tk_form, textvariable=self.tk_note, width=40).grid(row=4, column=1, columnspan=3, sticky="w")
         ttk.Label(tk_form, textvariable=self.tk_info, foreground="gray", justify="left").grid(
-            row=3, column=0, columnspan=3, sticky="w", pady=(5, 0))
-        for variable in (self.tk_fragment, self.tk_parent):
+            row=5, column=0, columnspan=4, sticky="w", pady=(5, 0))
+        for variable in (self.tk_feature, self.tk_reference):
             variable.trace_add("write", lambda *_: self._update_info())
+        for variable in (self.tk_adduct, self.tk_adduct_reference):
+            variable.trace_add("write", lambda *_: self._suggest_adduct_note())
 
         tk_buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         tk_buttons.pack(fill="x")
         ttk.Button(tk_buttons, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(tk_buttons, text="Add", command=self.on_click_add).pack(side="right", padx=5)
-        self._update_info()
+        self.on_change_kind()
+
+    @property
+    def kind(self) -> str:
+        return self.tk_kind.get()
 
     def _read_feature_ids(self) -> tuple[int, int] | None:
         try:
-            f_ids = int(self.tk_fragment.get()), int(self.tk_parent.get())
+            f_ids = int(self.tk_feature.get()), int(self.tk_reference.get())
         except ValueError:
             return None
         return f_ids if all(f_id in self.app.meas_db.mzs for f_id in f_ids) else None
 
+    def _suggest_note(self, note: str):
+        """Fill in a note, unless the user typed one."""
+        if self.tk_note.get() in ("", self.suggested_note):
+            self.tk_note.set(note)
+        self.suggested_note = note
+
+    def on_change_kind(self):
+        """Labels of the kind, adduct fields only for adducts, order of the features by their m/z."""
+        _, role, role_reference = FEATURE_RELATIONS[self.kind]
+        self.tk_feature_label.set(f"{role} feature ID")
+        self.tk_reference_label.set(f"{role_reference} feature ID")
+        if self.kind == "adduct":
+            self.tk_adducts.grid()
+        else:
+            self.tk_adducts.grid_remove()
+        # a suggested note of another kind doesn't fit
+        if self.suggested_note and self.tk_note.get() == self.suggested_note:
+            self.tk_note.set("")
+        self.suggested_note = ""
+        # fragments have a lower, isotope peaks a higher m/z than the reference
+        if (f_ids := self._read_feature_ids()) is not None and self.kind in ("in_source_fragment", "isotope"):
+            mz, mz_reference = (self.app.meas_db.mzs[f_id] for f_id in f_ids)
+            if (mz > mz_reference) == (self.kind == "in_source_fragment"):
+                self.on_click_swap()  # updates the info
+                return
+        self._update_info()
+        self._suggest_adduct_note()
+
     def _update_info(self):
-        """Show Δm/z, ΔRT and the marked mass differences connecting both features, suggest the note from them."""
+        """Show Δm/z, ΔRT and ΔCCS of both features and what fits them, suggest the note."""
         if (f_ids := self._read_feature_ids()) is None:
             self.tk_info.set("Enter two measured feature IDs (shift-click both in the scatter plot to prefill).")
             return
-        (rt_fragment, mz_fragment), (rt_parent, mz_parent) = (self.app.get_rt_mz(f_id) for f_id in f_ids)
-        lines = [f"Δm/z (parent - fragment) {mz_parent - mz_fragment:.4f}, ΔRT {rt_parent - rt_fragment:+.2f} min"]
-        if mz_parent < mz_fragment:
-            lines.append("The parent has a lower m/z than the fragment.")
-        if marked := self.app.scatter.find_marked_mass_differences(*f_ids):
-            lines.append(f"Marked mass differences: {', '.join(marked)}")
-            if not self.tk_note.get():
-                self.tk_note.set(f"loss of {', '.join(marked)}")
+        (rt, mz), (rt_reference, mz_reference) = (self.app.get_rt_mz(f_id) for f_id in f_ids)
+        ccs, ccs_reference = (self.app.meas_db.collisional_cross_sections.get(f_id) for f_id in f_ids)
+        line = f"Δm/z (reference - feature) {mz_reference - mz:.4f}, ΔRT {rt_reference - rt:+.2f} min"
+        if ccs and ccs_reference:
+            line += f", ΔCCS {(ccs_reference - ccs) / ccs * 100:+.1f} %"
+        lines = [line]
+
+        if self.kind == "in_source_fragment":
+            if mz_reference < mz:
+                lines.append("The parent has a lower m/z than the fragment.")
+            if marked := self.app.scatter.find_marked_mass_differences(*f_ids):
+                lines.append(f"Marked mass differences: {', '.join(marked)}")
+                self._suggest_note(f"loss of {', '.join(marked)}")
+        elif self.kind == "isotope":
+            n_c13: int = round((mz - mz_reference) / C13_DISTANCE)
+            deviation_mda: float = (mz - mz_reference - n_c13 * C13_DISTANCE) * 1e3
+            lines.append(f"Δm/z = {n_c13} × 13C {deviation_mda:+.1f} mDa")
+            if n_c13 >= 1:
+                self._suggest_note(f"M+{n_c13}")
+        elif self.kind == "adduct":
+            if pairs := self._fitting_adducts(mz, mz_reference):
+                lines.append("Fitting adducts (feature / reference): " + ", ".join(
+                    f"{a} / {b} ({d * 1e3:+.1f} mDa)" for a, b, d in pairs[:4]))
+                if not self.tk_adduct.get() and not self.tk_adduct_reference.get():
+                    self.tk_adduct.set(pairs[0][0])
+                    self.tk_adduct_reference.set(pairs[0][1])
+            else:
+                lines.append("No pair of adducts fits the m/z of both features.")
         self.tk_info.set("\n".join(lines))
 
+    def _fitting_adducts(self, mz: float, mz_reference: float) -> list[tuple[str, str, float]]:
+        """
+        Pairs of adducts (feature, reference) of the same neutral mass within the precursor tolerances of both
+        features, with the deviation of the measured from the calculated m/z of the feature, best first.
+        """
+        try:
+            tolerance: float = (self.app.matching.precursor_tolerance_da(mz)
+                                + self.app.matching.precursor_tolerance_da(mz_reference))
+        except tk.TclError:
+            return []
+        adducts: dict[str, Adduct] = {}
+        for name in ADDUCTS:
+            try:
+                adducts[name] = Adduct(name)
+            except Exception:
+                continue
+        pairs: list[tuple[str, str, float]] = []
+        for name_reference, adduct_reference in adducts.items():
+            mass: float = adduct_reference.mz_to_mass(mz_reference)
+            for name, adduct in adducts.items():
+                if name == name_reference or (adduct.charge > 0) != (adduct_reference.charge > 0):
+                    continue
+                if abs(deviation := mz - adduct.mass_to_mz(mass)) <= tolerance:
+                    pairs.append((name, name_reference, deviation))
+        return sorted(pairs, key=lambda pair: abs(pair[2]))
+
+    def _suggest_adduct_note(self):
+        if self.kind == "adduct" and (adduct := self.tk_adduct.get().strip()) and \
+                (adduct_reference := self.tk_adduct_reference.get().strip()):
+            self._suggest_note(f"{adduct} of {adduct_reference}")
+
     def on_click_swap(self):
-        fragment, parent = self.tk_fragment.get(), self.tk_parent.get()
-        self.tk_fragment.set(parent)
-        self.tk_parent.set(fragment)
+        feature, reference = self.tk_feature.get(), self.tk_reference.get()
+        adduct, adduct_reference = self.tk_adduct.get(), self.tk_adduct_reference.get()
+        self.tk_feature.set(reference)
+        self.tk_reference.set(feature)
+        self.tk_adduct.set(adduct_reference)
+        self.tk_adduct_reference.set(adduct)
 
     def on_click_add(self):
         if (f_ids := self._read_feature_ids()) is None:
             messagebox.showerror("Invalid input", "Please enter two existing measured feature IDs.", parent=self)
             return
-        f_id_fragment, f_id_parent = f_ids
-        if f_id_fragment == f_id_parent:
-            messagebox.showerror("Invalid input", "Fragment and parent must be different features.", parent=self)
+        f_id, f_id_reference = f_ids
+        if f_id == f_id_reference:
+            messagebox.showerror("Invalid input", "Please enter two different features.", parent=self)
             return
+        adduct: str | None = (self.tk_adduct.get().strip() or None) if self.kind == "adduct" else None
+        label = FEATURE_RELATIONS[self.kind][0]
         note: str | None = self.tk_note.get().strip() or None
-        added: bool = self.app.add_pending_annotation(("in_source_fragment", f_id_fragment, str(f_id_parent)), dict(
-            kind="in_source_fragment",
-            name=f"in-source fragment of {f_id_parent}" + (f" ({note})" if note else ""),
+        added: bool = self.app.add_pending_annotation((self.kind, f_id, str(f_id_reference)), dict(
+            kind=self.kind,
+            name=f"{label} of {f_id_reference}" + (f" ({note})" if note else ""),
+            adduct=adduct,
             note=note,
-            reference=f_id_parent,
+            reference=f_id_reference,
         ))
-        self.app.set_status(f"Marked feature {f_id_fragment} as in-source fragment of {f_id_parent}." if added
-                            else f"Feature {f_id_fragment} is already marked as in-source fragment of {f_id_parent}.")
+        self.app.set_status(f"Marked feature {f_id} as {label} of {f_id_reference}." if added
+                            else f"Feature {f_id} is already marked as {label} of {f_id_reference}.")
         self.destroy()

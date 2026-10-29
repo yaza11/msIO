@@ -42,10 +42,13 @@ class ResultsPanel(CollapsibleSection):
         "dmz_mda": ("Δm/z (mDa)", 80, "e"),
         "dmz_ppm": ("Δm/z (ppm)", 80, "e"),
         "dccs_percent": ("ΔCCS (%)", 70, "e"),
+        "xlogp": ("logP", 55, "e"),
         "annotation": ("Annotation", 85, "center"),
         "source_library": ("Source", 150, "w"),
         "library": ("Library", 150, "w"),
     }
+    # columns only shown if a row has a value (e.g. logP, which most libraries don't have)
+    OPTIONAL_COLUMNS: tuple[str, ...] = ("xlogp",)
     # columns of the matches table shown instead (formulas that don't fit the measured m/z are in brackets)
     DISPLAY_COLUMNS: dict[str, str] = {"formula": "formula_display"}
     # background colors of the rows, alternating between measured features
@@ -104,7 +107,8 @@ class ResultsPanel(CollapsibleSection):
             side="right", padx=5)
         ttk.Button(tk_buttons, text="Add manual annotation", command=app.on_click_add_manual_annotation).pack(
             side="right")
-        ttk.Button(tk_buttons, text="Mark in-source fragment", command=app.on_click_mark_in_source_fragment).pack(
+        ttk.Button(tk_buttons, text="Mark fragment / duplicate / isotope / adduct ...",
+                   command=app.on_click_mark_relation).pack(
             side="right", padx=5)
 
     # ---- content ----------------------------------------------------------------------------------------------------
@@ -134,6 +138,11 @@ class ResultsPanel(CollapsibleSection):
     def _fill(self, table: pd.DataFrame):
         """Replace the rows of the table, rows of the same measured feature share a background color."""
         self.tk_tree.delete(*self.tk_tree.get_children())
+        # decided by all matches, so the columns don't come and go while filtering
+        matches: pd.DataFrame = self.app.matches_table
+        hidden: set[str] = {column for column in self.OPTIONAL_COLUMNS
+                            if column not in matches.columns or matches[column].isna().all()}
+        self.tk_tree.configure(displaycolumns=[column for column in self.columns if column not in hidden])
         if table.empty:
             return
         f_ids_meas = sorted(table['feature_id_meas'].unique())
@@ -218,9 +227,13 @@ class ResultsPanel(CollapsibleSection):
         """Ctrl+click on a column header: further sort key."""
         if self.tk_tree.identify_region(event.x, event.y) != "heading":
             return None
-        column: str = self.columns[int(self.tk_tree.identify_column(event.x)[1:]) - 1]
+        column: str = self._column_at(event.x)
         self.on_click_heading(column, secondary=True)
         return "break"  # don't invoke the normal sorting of the header
+
+    def _column_at(self, x: int) -> str:
+        """Column at the x position (the shown columns can differ from self.columns, see OPTIONAL_COLUMNS)."""
+        return self.tk_tree.column(self.tk_tree.identify_column(x), "id")
 
     # ---- selection --------------------------------------------------------------------------------------------------
     def selected_match(self) -> pd.Series | None:
@@ -302,7 +315,7 @@ class ResultsPanel(CollapsibleSection):
         if not item:
             return
         self.tk_tree.selection_set(item)
-        column: str = self.columns[int(self.tk_tree.identify_column(event.x)[1:]) - 1]
+        column: str = self._column_at(event.x)
         value: str = str(self.tk_tree.set(item, column))
         self.tk_menu.delete(0, "end")
         self.tk_menu.add_command(

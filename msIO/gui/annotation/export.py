@@ -11,7 +11,7 @@ from msIO.features.sirius import CompoundCandidate, FeatureSirius
 from msIO.gui.annotation.common import AnnotationKey
 from msIO.sql.session import get_sessionmaker, initiate_db
 
-# kinds of annotations that describe a compound (in-source fragments only refer to another feature)
+# kinds of annotations that describe a compound (relations like in-source fragments only refer to another feature)
 EXPORTED_KINDS: tuple[str, ...] = ("library", "manual")
 
 
@@ -26,7 +26,7 @@ def _copy_spectrum(spectrum: PeakList | None) -> PeakList | None:
 def _complete_from_library(kind: str, info: dict, lib_dbs: dict[str, Library]) -> dict:
     """Formula and structure of library annotations (not stored with older annotations) from the loaded library."""
     values: dict = dict(name=info.get('name'), formula=info.get('formula'), adduct=info.get('adduct'),
-                        smiles=info.get('smiles'), inchi=info.get('inchi'))
+                        smiles=info.get('smiles'), inchi=info.get('inchi'), xlogp=info.get('xlogp'))
     library_name = info.get('library_name')
     if library_name is None and info.get('library') is not None:
         library_name = os.path.basename(info['library'].path_file)
@@ -36,6 +36,8 @@ def _complete_from_library(kind: str, info: dict, lib_dbs: dict[str, Library]) -
         values['adduct'] = values['adduct'] or lib_db.adduct.get(f_id_lib)
         values['smiles'] = values['smiles'] or lib_db.smiles.get(f_id_lib)
         values['inchi'] = values['inchi'] or lib_db.inchis.get(f_id_lib)
+        if values['xlogp'] is None:
+            values['xlogp'] = lib_db.xlogp.get(f_id_lib)
     return values
 
 
@@ -95,6 +97,7 @@ def write_annotations_as_library(
                     adduct_sirius=values['adduct'],
                     smiles=values['smiles'],
                     inchi=values['inchi'],
+                    xlogp=values['xlogp'],
                     confidence_score=info.get('ms2_score'),
                 )]),
             ))

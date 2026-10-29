@@ -18,10 +18,18 @@ SQLITE_FILE_TYPES: list[tuple[str, str]] = [("SQLite Files", "*.sqlite *.db *.sq
 
 # (kind, measured feature id, reference) identifies a manual annotation, kind is one of the
 # ManualAnnotationKind of FeatureManagerDB, the reference is the library feature id ("library"),
-# the parent feature id ("in_source_fragment") or "name|adduct" ("manual")
+# the reference feature id (relations to another feature, see FEATURE_RELATIONS) or "name|adduct" ("manual")
 AnnotationKey = tuple[str, int, str]
+# relations between measured features: kind -> (label, role of the feature, role of the reference feature)
+FEATURE_RELATIONS: dict[str, tuple[str, str, str]] = {
+    "in_source_fragment": ("in-source fragment", "Fragment", "Parent"),
+    "duplicate": ("duplicate", "Duplicate", "Original"),
+    "isotope": ("isotope peak", "Isotope peak", "Monoisotopic peak"),
+    "adduct": ("adduct", "Adduct", "Main adduct"),
+}
+FEATURE_RELATION_KINDS: tuple[str, ...] = tuple(FEATURE_RELATIONS)
 ANNOTATION_KIND_LABELS: dict[str, str] = {
-    "library": "library match", "manual": "manual", "in_source_fragment": "in-source fragment"
+    "library": "library match", "manual": "manual", **{kind: label for kind, (label, _, _) in FEATURE_RELATIONS.items()}
 }
 
 # colors of the two features compared by shift-click, used in the scatter plot and the overview

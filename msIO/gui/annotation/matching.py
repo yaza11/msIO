@@ -150,8 +150,8 @@ def matches_to_table(
     Turn the matches of all libraries (output of Library.find_matches, each match with the file name of its library
     under "library") into the table shown in the GUI.
 
-    Adds the properties of the measured features (see build_feature_table), the CCS difference to the library entry
-    and the formula to display (in brackets if it doesn't fit the measured m/z).
+    Adds the properties of the measured features (see build_feature_table), the CCS difference to and the logP of the
+    library entry and the formula to display (in brackets if it doesn't fit the measured m/z).
     Runs in the search worker, so the data is passed in instead of using the current one.
     """
     if not any(matches.values()):  # lib_match_result_to_table can't handle that
@@ -164,10 +164,13 @@ def matches_to_table(
 
     # CCS of 0 means not measured, feature ids of different libraries overlap
     ccs_lib = pd.Series(np.nan, index=table.index)
+    table['xlogp'] = np.nan
     for library_name, lib_db in lib_dbs.items():
         rows = table.library == library_name
         ccs_lib[rows] = pd.to_numeric(table.feature_id_lib[rows].map(lib_db.collisional_cross_sections),
                                       errors='coerce')
+        table.loc[rows, 'xlogp'] = pd.to_numeric(table.feature_id_lib[rows].map(lib_db.xlogp), errors='coerce')
+    table['xlogp'] = table['xlogp'].round(2)
     ccs_meas = table.ccs_meas
     table['dccs_percent'] = ((ccs_meas - ccs_lib) / ccs_lib * 100).where((ccs_meas > 0) & (ccs_lib > 0)).round(2)
 

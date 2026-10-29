@@ -13,6 +13,7 @@ from matplotlib.figure import Figure
 from msIO.gui.annotation.common import (
     COMPARISON_COLORS, CollapsibleSection, find_feature_pairs, pack_canvas, parse_mass_differences, parse_masses
 )
+from msIO.gui.annotation.series import SeriesFit, find_candidates, fit_series
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -22,6 +23,8 @@ ZOOM_IN_KEYS: set[str] = {"+", "plus", "add", "kp_add"}
 ZOOM_OUT_KEYS: set[str] = {"-", "minus", "subtract", "kp_subtract"}
 # colors of the lines connecting features with marked mass differences (one per entry)
 MASS_DIFFERENCE_COLORS: list[str] = ["C3", "C4", "C5", "C6", "C8", "C9"]
+# colors of the series (Ctrl+click)
+SERIES_COLORS: list[str] = ["darkorange", "darkviolet", "teal", "saddlebrown", "deeppink", "olive"]
 
 # common diagnostic fragments (ions) and neutral losses of lipid classes (positive ion mode): {lipid class: formula}
 try:
@@ -56,6 +59,10 @@ class ScatterPanel(CollapsibleSection):
     features), highlighted features (MS2 fragments / neutral losses) and lines between features with marked mass
     differences. Click: select / show a feature, shift+click: compare (see AnnotationGUI.on_scatter_click),
     + / -: zoom.
+
+    Series (see series.py): Ctrl+click features to select the members of a series, a line is fitted through them and
+    extrapolated. Ctrl+clicks while Ctrl stays pressed work on the same series (a selected feature is removed again),
+    the first Ctrl+click after releasing Ctrl starts a new series.
     """
 
     ZOOM_FACTOR: float = 1.5
@@ -69,6 +76,8 @@ class ScatterPanel(CollapsibleSection):
         # MS2 peaks below this intensity are ignored when searching fragments and losses
         self.tk_min_peak_intensity: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=100)
         self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=0.2)
+        # members of a series shown beyond the first and last selected feature
+        self.tk_series_extrapolate: tk.IntVar = tk.IntVar(app.tk_root, value=3)
 
         self.canvas: FigureCanvasTkAgg = None
         self.toolbar: NavigationToolbar2Tk = None
@@ -81,6 +90,10 @@ class ScatterPanel(CollapsibleSection):
         self.compared_features_markers: list = []  # squares around the compared features
         self.mass_difference_lines: list = []  # lines and their end caps
         self.annotated_features_markers: list = []  # green / yellow points of annotated features
+        # selected features of each series, the last one is extended while Ctrl stays pressed (series_open)
+        self.series: list[list[int]] = []
+        self.series_open: bool = False
+        self.series_artists: list = []  # lines, selected and predicted members of the series
         self.focus_before_plot: tk.Misc = None  # gets the focus back when the mouse leaves the plot
         # annotated MS2 peaks of the measured database offered in the fragment list: {shown text: inserted value}
         # followed by the common fragments of LipidCalculator, the losses list holds its common losses
@@ -138,6 +151,23 @@ class ScatterPanel(CollapsibleSection):
                   text="e.g. NH3; C[13] - C[12]; [M+H]+>[M+NH4]+ (adduct exchange); fragments are ions, "
                        "e.g. C5H15NO4P+").grid(row=3, column=0, columnspan=8, sticky="w")
 
+        # series of features: Ctrl+click in the plot
+        ttk.Label(tk_controls, text="Series").grid(row=4, column=0, sticky="w", pady=2)
+        tk_series = ttk.Frame(tk_controls)
+        tk_series.grid(row=4, column=1, columnspan=7, sticky="w", padx=(4, 0))
+        ttk.Label(tk_series, text="extrapolate").pack(side="left")
+        ttk.Spinbox(tk_series, from_=0, to=10, textvariable=self.tk_series_extrapolate, width=3,
+                    command=self.mark_series).pack(side="left", padx=4)
+        ttk.Label(tk_series, text="members").pack(side="left", padx=(0, 10))
+        ttk.Button(tk_series, text="Remove last series", command=self.remove_last_series).pack(side="left")
+        ttk.Button(tk_series, text="Remove all series", command=self.remove_all_series).pack(side="left", padx=3)
+        ttk.Label(tk_series, foreground="gray",
+                  text="Ctrl+click features (new series after releasing Ctrl, Ctrl+click again: remove)").pack(
+            side="left", padx=(8, 0))
+        # the next Ctrl+click starts a new series once Ctrl is released (wherever the focus is)
+        for key in ("<KeyRelease-Control_L>", "<KeyRelease-Control_R>"):
+            app.tk_root.bind_all(key, lambda event: setattr(self, "series_open", False), add="+")
+
         self.tk_plot_frame = ttk.Frame(self.body)
         self.tk_plot_frame.pack(fill="both", expand=True)
         self.update_fragment_choices()
@@ -147,6 +177,7 @@ class ScatterPanel(CollapsibleSection):
         """New measured database: no highlights and marks, full view."""
         self.highlighted_f_ids = None
         self.mass_difference_pairs = []
+        self.series, self.series_open = [], False
         self.draw(keep_view=False)
         self.update_fragment_choices()
 
@@ -163,6 +194,7 @@ class ScatterPanel(CollapsibleSection):
         self.compared_features_markers = []
         self.mass_difference_lines = []
         self.annotated_features_markers = []
+        self.series_artists = []
 
     def draw(self, keep_view: bool = True):
         """
@@ -203,6 +235,7 @@ class ScatterPanel(CollapsibleSection):
             self.mark_selected_feature(int(match.feature_id_meas))
         self.mark_compared_features()
         self.mark_mass_differences()
+        self.mark_series()
         if view is not None:
             # the full view first, so that the home button of the toolbar still shows all features
             self.toolbar.push_current()
@@ -437,6 +470,113 @@ class ScatterPanel(CollapsibleSection):
         return [entry for entry, pairs in self.mass_difference_pairs
                 if (f_id_a, f_id_b) in pairs or (f_id_b, f_id_a) in pairs]
 
+    # ---- series -----------------------------------------------------------------------------------------------------
+    def fit_series(self, f_ids: list[int]) -> SeriesFit | None:
+        """Line through the features of a series (None for less than two features or without common m/z step)."""
+        points = self._points(f_ids)
+        if len(points) < 2:
+            return None
+        rts, mzs = np.array(points).T
+        try:
+            n_extrapolate: int = max(0, self.tk_series_extrapolate.get())
+        except tk.TclError:
+            n_extrapolate = 0
+        return fit_series(rts, mzs, n_extrapolate)
+
+    def find_series_candidates(self, fit: SeriesFit) -> dict[int, list[int]]:
+        """Measured features at the predicted members (precursor tolerance, RT window), see series.find_candidates."""
+        points = {f_id: p for f_id in self.app.meas_db.feature_ids if (p := self.app.get_rt_mz(f_id)) is not None}
+        f_ids = np.array(list(points.keys()))
+        rts, mzs = np.array(list(points.values())).T
+        try:
+            max_dmz_ppm, max_dmz_da = self.app.matching.precursor_tolerances()
+            rt_window: float = self.tk_rt_window.get()
+        except tk.TclError:
+            return {}
+        return find_candidates(fit, f_ids, rts, mzs, np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * mzs), rt_window)
+
+    def mark_series(self):
+        """Draw the selected features, the fitted line and the predicted members (x) of each series, circle measured
+        features at predicted members."""
+        if self.ax is None:
+            return
+        for artist in self.series_artists:
+            artist.remove()
+        self.series_artists = []
+        # the extrapolated members can lie outside of the shown region, they must not change it
+        view = self.ax.get_xlim(), self.ax.get_ylim()
+        for i, f_ids in enumerate(self.series):
+            color: str = SERIES_COLORS[i % len(SERIES_COLORS)]
+            if not (points := self._points(f_ids)):
+                continue
+            rts, mzs = zip(*points)
+            self.series_artists.append(self.ax.scatter(rts, mzs, s=110, marker="D", facecolors="none",
+                                                       edgecolors=color, linewidths=2, zorder=13))
+            if (fit := self.fit_series(f_ids)) is None:
+                self.series_artists.extend(self.ax.plot([], [], color=color, marker="D", linestyle="none",
+                                                        label=f"Series {i + 1}: {len(f_ids)} feature(s)"))
+                continue
+            ends = [fit.n_min, fit.n_max]
+            self.series_artists.extend(self.ax.plot(fit.rt(ends), fit.mz(ends), linestyle="--", color=color,
+                                                    linewidth=1.5, zorder=12, label=f"Series {i + 1}: {fit.describe()}"))
+            if fit.predicted:
+                _, rts_predicted, mzs_predicted = zip(*fit.predicted)
+                self.series_artists.append(self.ax.scatter(rts_predicted, mzs_predicted, s=60, marker="x",
+                                                           color=color, linewidths=2, zorder=13))
+            if candidates := self.find_series_candidates(fit):
+                if points := self._points([f_id for f_ids_n in candidates.values() for f_id in f_ids_n]):
+                    rts_found, mzs_found = zip(*points)
+                    self.series_artists.append(self.ax.scatter(rts_found, mzs_found, s=200, marker="o",
+                                                               facecolors="none", edgecolors=color, linewidths=1.5,
+                                                               linestyle="--", zorder=13))
+        self.ax.set_xlim(*view[0])
+        self.ax.set_ylim(*view[1])
+        self._update_legend()
+
+    def describe_series(self, index: int) -> str:
+        """Status text of a series: step, deviations of the selected features, features at predicted members."""
+        f_ids: list[int] = self.series[index]
+        if (fit := self.fit_series(f_ids)) is None:
+            hint = "" if len(f_ids) < 2 else " (no common m/z step, e.g. features too close or not a series)"
+            return f"Series {index + 1}: {len(f_ids)} feature(s){hint}."
+        text = (f"Series {index + 1}: {len(f_ids)} features, {fit.describe()} (largest deviation "
+                f"{fit.max_dmz_da * 1e3:.1f} mDa, {fit.max_drt:.2f} min)")
+        if candidates := self.find_series_candidates(fit):
+            first: int = int(fit.members.min())
+            found = ", ".join(f"{'+' if n > first else ''}{n - first}: {', '.join(map(str, f_ids_n))}"
+                              for n, f_ids_n in sorted(candidates.items()))
+            text += f". Features at predicted members (relative to the lowest m/z): {found}"
+        return text + "."
+
+    def on_series_click(self, f_id: int):
+        """Ctrl+click: add the feature to the current series or remove it, a new series once Ctrl was released."""
+        if not self.series_open or not self.series:
+            self.series.append([])
+            self.series_open = True
+        current: list[int] = self.series[-1]
+        if f_id in current:
+            current.remove(f_id)
+        else:
+            current.append(f_id)
+        if not current:  # last feature removed
+            self.series.pop()
+            self.series_open = False
+            self.mark_series()
+            self.app.set_status(f"Removed the last feature of series {len(self.series) + 1}.")
+            return
+        self.mark_series()
+        self.app.set_status(self.describe_series(len(self.series) - 1))
+
+    def remove_last_series(self):
+        if self.series:
+            self.series.pop()
+        self.series_open = False
+        self.mark_series()
+
+    def remove_all_series(self):
+        self.series, self.series_open = [], False
+        self.mark_series()
+
     # ---- mouse and keys ---------------------------------------------------------------------------------------------
     def find_closest_feature(self, x: float, y: float) -> int | None:
         """
@@ -461,6 +601,9 @@ class ScatterPanel(CollapsibleSection):
             return
         # modifiers come from the state of this click; event.key is the last key seen by the canvas and can get
         # stuck at "shift" when the key is released while another widget has the focus
+        if "ctrl" in event.modifiers:
+            self.on_series_click(closest_f_id)
+            return
         self.app.on_scatter_click(closest_f_id, shift="shift" in event.modifiers)
 
     def on_enter(self, event):

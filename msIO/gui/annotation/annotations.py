@@ -4,7 +4,7 @@ GUI (annotations to add, annotations to discard / remove), which are only writte
 """
 
 from msIO.feature_managers.db import FeatureManagerDB
-from msIO.gui.annotation.common import ANNOTATION_KIND_LABELS, AnnotationKey
+from msIO.gui.annotation.common import ANNOTATION_KIND_LABELS, FEATURE_RELATION_KINDS, AnnotationKey
 
 
 class AnnotationStore:
@@ -12,8 +12,8 @@ class AnnotationStore:
     State of the manual annotations (no GUI).
 
     saved:     annotations in the measured database {key: info}, info holds kind, name, formula, adduct, smiles,
-               ms2_score, reference (library or parent feature id), library_name (file name of the library) and the
-               candidate_ids of the database rows
+               xlogp, ms2_score, reference (library or reference feature id), library_name (file name of the library)
+               and the candidate_ids of the database rows
     pending:   annotations to add {key: info}
     discarded: pending annotations not to add and saved annotations to remove
     """
@@ -58,6 +58,7 @@ class AnnotationStore:
                 formula=candidate.formula_sirius,
                 adduct=candidate.adduct_sirius,
                 smiles=candidate.smiles,
+                xlogp=candidate.xlogp,
                 ms2_score=candidate.confidence_score,
                 reference=reference,
                 library_name=library_name if kind == "library" else None,
@@ -103,19 +104,20 @@ class AnnotationStore:
         return {key: info for collection in (self.saved, self.pending) for key, info in collection.items()
                 if key not in self.discarded}
 
-    def annotated_feature_ids(self) -> set[int]:
-        """Measured features with an annotation that is (or will be) in the database."""
+    def annotated_feature_ids(self, kinds: tuple[str, ...] = None) -> set[int]:
+        """Measured features with an annotation (of the given kinds, default: all) that is (or will be) in the
+        database."""
         return {key[1] for collection in (self.saved, self.pending) for key in collection
-                if key not in self.discarded}
+                if key not in self.discarded and (kinds is None or key[0] in kinds)}
 
     def feature_annotation(self, f_id: int) -> dict | None:
-        """Annotation of a measured feature (pending or saved): manual > library match > in-source fragment."""
+        """Annotation of a measured feature (pending or saved): manual > library match > relations to features."""
         annotations: dict[str, dict] = {}
         for collection in (self.saved, self.pending):
             for key, info in collection.items():
                 if key[1] == f_id and key not in self.discarded:
                     annotations.setdefault(key[0], info)
-        for kind in ("manual", "library", "in_source_fragment"):
+        for kind in ("manual", "library", *FEATURE_RELATION_KINDS):
             if kind in annotations:
                 return annotations[kind]
         return None
@@ -132,8 +134,9 @@ class AnnotationStore:
             meas_db.add_manual_annotation(
                 f_id_meas, name=info['name'], formula=info['formula'], adduct=info['adduct'], smiles=info['smiles']
             )
-        elif kind == "in_source_fragment":
-            meas_db.add_in_source_fragment_annotation(f_id_meas, info['reference'], note=info['note'])
+        elif kind in FEATURE_RELATION_KINDS:
+            meas_db.add_feature_relation(kind, f_id_meas, info['reference'], note=info.get('note'),
+                                         adduct=info.get('adduct'))
         else:
             raise ValueError(f'unknown annotation kind {kind}')
 
