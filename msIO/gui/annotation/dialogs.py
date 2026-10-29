@@ -9,9 +9,9 @@ import pandas as pd
 from LipidCalculator import Adduct, CompoundDict
 
 from msIO.gui.annotation.common import (
-    ADDUCTS, ANNOTATION_KIND_LABELS, FEATURE_RELATIONS, AnnotationKey, open_ipl_builder
+    ADDUCTS, ANNOTATION_KIND_LABELS, FEATURE_RELATIONS, AnnotationKey, open_ipl_batch, open_ipl_builder
 )
-from msIO.gui.annotation.matching import C13_DISTANCE
+from msIO.gui.annotation.matching import C13_DISTANCE, MzTarget
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -156,20 +156,21 @@ class ManualAnnotationDialog(tk.Toplevel):
     """
     Dialog to annotate a measured feature with a compound entered by hand.
 
-    Name, formula, adduct and SMILES can be typed in or taken from the IPL builder of LipidCalculator.
+    Name, formula, adduct and SMILES can be typed in, taken from the IPL builder of LipidCalculator or prefilled with
+    a compound (e.g. the target of the m/z filter at the feature).
     The m/z calculated from formula and adduct is compared to the m/z of the feature.
     """
 
-    def __init__(self, app: "AnnotationGUI", f_id_meas: int | None):
+    def __init__(self, app: "AnnotationGUI", f_id_meas: int | None, compound: MzTarget | None = None):
         super().__init__(app.tk_root)
         self.app: "AnnotationGUI" = app
         self.title("Add manual annotation")
         self.resizable(True, False)
         self.tk_f_id_meas = tk.StringVar(self, value="" if f_id_meas is None else str(f_id_meas))
-        self.tk_name = tk.StringVar(self)
-        self.tk_formula = tk.StringVar(self)
-        self.tk_adduct = tk.StringVar(self, value="[M+H]+")
-        self.tk_smiles = tk.StringVar(self)
+        self.tk_name = tk.StringVar(self, value="" if compound is None else compound.name)
+        self.tk_formula = tk.StringVar(self, value="" if compound is None else compound.formula or "")
+        self.tk_adduct = tk.StringVar(self, value="[M+H]+" if compound is None else compound.adduct)
+        self.tk_smiles = tk.StringVar(self, value="" if compound is None else compound.smiles or "")
         self.tk_mz_info = tk.StringVar(self)
 
         tk_form = ttk.Frame(self, padding=10)
@@ -262,6 +263,7 @@ class MzFromCompoundDialog(tk.Toplevel):
     """
     Dialog to set the m/z filter of the results table from a compound: searched by name in the libraries, built with
     the IPL builder of LipidCalculator or entered as formula and adduct. The filter is m/z ± precursor tolerance.
+    "IPL batch ..." filters for many compounds at once (see AnnotationGUI.set_mz_targets).
     """
 
     MAX_SEARCH_RESULTS: int = 500
@@ -318,6 +320,7 @@ class MzFromCompoundDialog(tk.Toplevel):
         ttk.Combobox(tk_compound, textvariable=self.tk_adduct, values=ADDUCTS, width=14).grid(
             row=0, column=3, sticky="w", padx=(4, 12))
         ttk.Button(tk_compound, text="Build IPL ...", command=self.on_click_build_ipl).grid(row=0, column=4)
+        ttk.Button(tk_compound, text="IPL batch ...", command=self.on_click_ipl_batch).grid(row=0, column=5, padx=4)
         ttk.Label(tk_compound, text="m/z").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(tk_compound, textvariable=self.tk_mz, width=14).grid(row=1, column=1, sticky="w", padx=(4, 12),
                                                                        pady=(6, 0))
@@ -406,6 +409,10 @@ class MzFromCompoundDialog(tk.Toplevel):
 
     def on_click_build_ipl(self):
         open_ipl_builder(self, "Use for m/z filter", self._use_ipl)
+
+    def on_click_ipl_batch(self):
+        """Generate IPLs with LipidCalculator (e.g. archaeols with several chains), all of them form the m/z filter."""
+        open_ipl_batch(self.app.tk_root, self.app.set_mz_targets)
 
     def _use_ipl(self, frame, payload: dict, tk_window: tk.Toplevel):
         self.tk_formula.set(payload["formula"])

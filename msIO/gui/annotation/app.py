@@ -7,7 +7,7 @@ Workflow:
        the feature properties shown in the table (incl. I1 / I0 from the MS1 spectra) are loaded in the background.
     2. Set the matching parameters and click "Find Matches".
     3. Narrow down the results table with the filters (applied while typing, number fields take intervals like
-       400-500; 512.3±0.01), limit the rows per feature and add a dummy row per feature (only the feature
+       400-500; 512.3±0.01; the m/z can be set from a compound or an IPL batch of LipidCalculator), limit the rows per feature and add a dummy row per feature (only the feature
        properties, also for features without matches). Clicking a
        feature in the scatter plot selects its best match in the table. In the scatter plot, features with specific
        MS2 fragments or neutral losses can be highlighted and pairs of features with
@@ -50,8 +50,8 @@ from msIO.gui.annotation.dialogs import (
 from msIO.gui.annotation.export import EXPORTED_KINDS, write_annotations_as_library
 from msIO.gui.annotation.filter_panel import FilterError, FilterPanel
 from msIO.gui.annotation.matching import (
-    build_feature_table, combine_with_dummies, dummy_table, empty_matches_table, limit_matches_per_feature,
-    matches_to_table
+    MzTarget, build_feature_table, combine_with_dummies, dummy_table, empty_matches_table, limit_matches_per_feature,
+    match_targets, matches_to_table
 )
 from msIO.gui.annotation.matching_panel import MatchingPanel
 from msIO.gui.annotation.overview_panel import OverviewPanel
@@ -107,6 +107,10 @@ class AnnotationGUI:
         self.matches_table: pd.DataFrame = empty_matches_table(list(ResultsPanel.COLUMNS))
         # matches with a dummy row per feature, built when needed: ((matches table, feature table), table)
         self._table_with_dummies: tuple[tuple, pd.DataFrame] = None
+        # compounds of the m/z filter (e.g. an IPL batch) and the text they put into the m/z filter field, they are
+        # dropped when the field is changed
+        self.mz_targets: list[MzTarget] = []
+        self.mz_targets_text: str = ""
 
         # manual annotations: changes are collected locally and only written to the measured database on request
         self.annotations: AnnotationStore = AnnotationStore()
@@ -532,6 +536,11 @@ class AnnotationGUI:
         filtered: pd.DataFrame = table.loc[mask, :]
         if max_rows is not None:
             filtered = limit_matches_per_feature(filtered, max_rows)
+        if self.mz_targets and self.filters.tk_mz.get().strip() != self.mz_targets_text:
+            self.mz_targets, self.mz_targets_text = [], ""
+        if self.mz_targets:
+            filtered = filtered.assign(target=["; ".join(target.label for target in targets)
+                                               for targets in self.get_row_targets(filtered.mz_meas)])
         self._show_filtered_matches(filtered)
         n_shown: int = len(self.results.table)
         if show_empty_message and n_shown == 0:
@@ -549,6 +558,34 @@ class AnnotationGUI:
             return [int(f_id) for f_id in self.results.table.feature_id_meas.unique()]
         return []
 
+    def get_row_targets(self, mzs) -> list[list[MzTarget]]:
+        """Targets of the m/z filter at each m/z (precursor tolerance), closest first."""
+        try:
+            max_dmz_ppm, max_dmz_da = self.matching.precursor_tolerances()
+        except tk.TclError:
+            return [[] for _ in mzs]
+        return match_targets(pd.to_numeric(pd.Series(mzs), errors='coerce').to_numpy(dtype=float), self.mz_targets,
+                             max_dmz_ppm, max_dmz_da)
+
+    def set_mz_targets(self, targets: list[MzTarget]):
+        """
+        Filter the results to the m/z of the targets (each ± precursor tolerance, e.g. an IPL batch), show the dummy
+        rows (features without library matches) and name the fitting targets in the table.
+        """
+        try:
+            mzs = sorted({round(target.mz, 4) for target in targets})
+            text: str = "; ".join(f"{mz:.4f}±{self.matching.precursor_tolerance_da(mz):.4f}" for mz in mzs)
+        except tk.TclError:
+            messagebox.showerror("Invalid input", "Check the precursor tolerances.")
+            return
+        self.mz_targets, self.mz_targets_text = list(targets), text
+        self.filters.set_mz_text(text)
+        self.filters.tk_add_dummies.set(True)
+        self.apply_filters(show_empty_message=False)
+        n_features: int = len(set(self.results.table.feature_id_meas))
+        self.set_status(f"m/z filter of {len(targets)} targets ({len(mzs)} m/z values): {n_features} features "
+                        f"(dummy rows show the features without library matches, see column Target).")
+
     def set_mz_filter(self, mz: float):
         """Filter the results to measured features at mz (± precursor tolerance)."""
         try:
@@ -556,7 +593,7 @@ class AnnotationGUI:
         except tk.TclError:
             messagebox.showerror("Invalid input", "Check the precursor tolerances.")
             return
-        self.filters.set_mz_interval(mz, tolerance)
+        self.filters.set_mz_text(f"{mz:.4f}±{tolerance:.4f}")
         self.apply_filters()
 
     def on_click_mz_from_compound(self):
@@ -631,7 +668,11 @@ class AnnotationGUI:
         if self.meas_db is None:
             messagebox.showerror("Error", "Please load a measured database first.")
             return
-        ManualAnnotationDialog(self, self._get_current_feature())
+        # a target of the m/z filter at the selected row is the suggested compound
+        compound: MzTarget | None = None
+        if self.mz_targets and (match := self.results.selected_match()) is not None:
+            compound = next(iter(self.get_row_targets([match.mz_meas])[0]), None)
+        ManualAnnotationDialog(self, self._get_current_feature(), compound=compound)
 
     def on_click_mark_relation(self, kind: str = "in_source_fragment"):
         """

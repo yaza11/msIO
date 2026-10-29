@@ -5,6 +5,8 @@ The results table has one row per match (measured feature, library, library feat
 measured feature, which only holds the properties of the feature (see dummy_table).
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 from LipidCalculator import Adduct, CompoundDict
@@ -182,3 +184,41 @@ def matches_to_table(
     # order of the search result, restored when the sorting is removed (see ResultsPanel)
     table['default_order'] = np.arange(len(table))
     return table
+
+
+@dataclass(frozen=True)
+class MzTarget:
+    """Compound of the m/z filter (e.g. from an IPL batch of LipidCalculator) with the m/z of one adduct."""
+    name: str
+    formula: str | None
+    adduct: str
+    mz: float
+    smiles: str | None = None
+
+    @property
+    def label(self) -> str:
+        return f"{self.name} {self.adduct}"
+
+
+def match_targets(
+        mzs: np.ndarray,
+        targets: list[MzTarget],
+        max_dmz_ppm: float,
+        max_dmz_da: float
+) -> list[list[MzTarget]]:
+    """Targets within the precursor tolerance (stricter of both, at the target m/z) of each m/z, closest first."""
+    if not targets:
+        return [[] for _ in mzs]
+    order = sorted(targets, key=lambda target: target.mz)
+    target_mzs = np.array([target.mz for target in order])
+    tolerances = np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * target_mzs)
+    # a target is at most the largest tolerance away
+    max_tolerance = tolerances.max()
+    lefts = np.searchsorted(target_mzs, np.asarray(mzs, dtype=float) - max_tolerance, side='left')
+    rights = np.searchsorted(target_mzs, np.asarray(mzs, dtype=float) + max_tolerance, side='right')
+    matched: list[list[MzTarget]] = []
+    for mz, left, right in zip(mzs, lefts, rights):
+        near = [(abs(target_mzs[i] - mz), order[i]) for i in range(left, right)
+                if abs(target_mzs[i] - mz) <= tolerances[i]]
+        matched.append([target for _, target in sorted(near, key=lambda item: item[0])])
+    return matched

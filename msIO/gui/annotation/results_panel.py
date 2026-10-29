@@ -34,6 +34,7 @@ class ResultsPanel(CollapsibleSection):
         "ccs_meas": ("CCS (Å²)", 65, "e"),
         "intensity": ("Σ intensity", 80, "e"),
         "i1_i0": ("I1 / I0", 60, "e"),
+        "target": ("Target (m/z filter)", 170, "w"),
         "name": ("Compound name", 180, "w"),
         "formula": ("Formula", 110, "w"),
         "adduct": ("Adduct", 80, "w"),
@@ -47,8 +48,9 @@ class ResultsPanel(CollapsibleSection):
         "source_library": ("Source", 150, "w"),
         "library": ("Library", 150, "w"),
     }
-    # columns only shown if a row has a value (e.g. logP, which most libraries don't have)
-    OPTIONAL_COLUMNS: tuple[str, ...] = ("xlogp",)
+    # columns only shown if a row has a value: logP (most libraries don't have it) and the compounds of the m/z
+    # filter (only with targets, see AnnotationGUI.set_mz_targets)
+    OPTIONAL_COLUMNS: tuple[str, ...] = ("xlogp", "target")
     # columns of the matches table shown instead (formulas that don't fit the measured m/z are in brackets)
     DISPLAY_COLUMNS: dict[str, str] = {"formula": "formula_display"}
     # background colors of the rows, alternating between measured features
@@ -140,8 +142,10 @@ class ResultsPanel(CollapsibleSection):
         self.tk_tree.delete(*self.tk_tree.get_children())
         # decided by all matches, so the columns don't come and go while filtering
         matches: pd.DataFrame = self.app.matches_table
-        hidden: set[str] = {column for column in self.OPTIONAL_COLUMNS
-                            if column not in matches.columns or matches[column].isna().all()}
+        hidden: set[str] = {column for column in self.OPTIONAL_COLUMNS if column != "target"
+                            and (column not in matches.columns or matches[column].isna().all())}
+        if not self.app.mz_targets:
+            hidden.add("target")
         self.tk_tree.configure(displaycolumns=[column for column in self.columns if column not in hidden])
         if table.empty:
             return

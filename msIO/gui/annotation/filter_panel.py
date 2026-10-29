@@ -214,10 +214,10 @@ class FilterPanel(CollapsibleSection):
             tk_entry.delete(0, tk.END)
         self.last_values = self.get_values()
 
-    def set_mz_interval(self, mz: float, tolerance: float):
-        """Filter for mz ± tolerance (replaces the m/z filter)."""
+    def set_mz_text(self, text: str):
+        """Replace the m/z filter (intervals, see parse_intervals)."""
         self.tk_mz.delete(0, tk.END)
-        self.tk_mz.insert(0, f"{mz:.4f}±{tolerance:.4f}")
+        self.tk_mz.insert(0, text)
         self.last_values = self.get_values()
 
     def get_max_rows(self) -> int | None:

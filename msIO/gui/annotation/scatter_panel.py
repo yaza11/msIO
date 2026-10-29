@@ -11,9 +11,12 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from msIO.gui.annotation.common import (
-    COMPARISON_COLORS, CollapsibleSection, find_feature_pairs, pack_canvas, parse_mass_differences, parse_masses
+    ADDUCTS, COMPARISON_COLORS, CollapsibleSection, find_feature_pairs, pack_canvas, parse_mass_differences, parse_masses
 )
-from msIO.gui.annotation.series import SeriesFit, find_candidates, fit_series
+from msIO.gui.annotation.series import (
+    MeshOfSeries, ParallelSeries, SeriesFit, features_near, find_candidates, find_parallel, fit_series,
+    mesh_with_parallels, name_adduct_exchange
+)
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -62,7 +65,9 @@ class ScatterPanel(CollapsibleSection):
 
     Series (see series.py): Ctrl+click features to select the members of a series, a line is fitted through them and
     extrapolated. Ctrl+clicks while Ctrl stays pressed work on the same series (a selected feature is removed again),
-    the first Ctrl+click after releasing Ctrl starts a new series.
+    the first Ctrl+click after releasing Ctrl starts a new series. The two most recent crossing series span a mesh
+    (see series.SeriesMesh), whose knots are the possible members of both series. Series parallel to one of them
+    (all coeluting features differ by the same m/z, e.g. another adduct) get a copy of the mesh.
     """
 
     ZOOM_FACTOR: float = 1.5
@@ -78,6 +83,7 @@ class ScatterPanel(CollapsibleSection):
         self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=0.2)
         # members of a series shown beyond the first and last selected feature
         self.tk_series_extrapolate: tk.IntVar = tk.IntVar(app.tk_root, value=3)
+        self.tk_show_mesh: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=True)
 
         self.canvas: FigureCanvasTkAgg = None
         self.toolbar: NavigationToolbar2Tk = None
@@ -161,6 +167,8 @@ class ScatterPanel(CollapsibleSection):
         ttk.Label(tk_series, text="members").pack(side="left", padx=(0, 10))
         ttk.Button(tk_series, text="Remove last series", command=self.remove_last_series).pack(side="left")
         ttk.Button(tk_series, text="Remove all series", command=self.remove_all_series).pack(side="left", padx=3)
+        ttk.Checkbutton(tk_series, text="Mesh of the last two", variable=self.tk_show_mesh,
+                        command=self.mark_series).pack(side="left", padx=(6, 0))
         ttk.Label(tk_series, foreground="gray",
                   text="Ctrl+click features (new series after releasing Ctrl, Ctrl+click again: remove)").pack(
             side="left", padx=(8, 0))
@@ -495,9 +503,62 @@ class ScatterPanel(CollapsibleSection):
             return {}
         return find_candidates(fit, f_ids, rts, mzs, np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * mzs), rt_window)
 
+    def series_fits(self) -> list[SeriesFit | None]:
+        return [self.fit_series(f_ids) for f_ids in self.series]
+
+    def parallel_series(self, fits: list[SeriesFit | None]) -> list[ParallelSeries]:
+        """
+        Pairs of series that run parallel (series.find_parallel: same step, all coeluting features differ by the same
+        m/z), e.g. the same series as two adducts, with the adduct exchange that fits.
+        """
+        try:
+            rt_window: float = self.tk_rt_window.get()
+        except tk.TclError:
+            return []
+        parallels: list[ParallelSeries] = []
+        for b in range(len(fits)):
+            for a in range(b):
+                if fits[a] is None or fits[b] is None:
+                    continue
+                points_a, points_b = np.array(self._points(self.series[a])), np.array(self._points(self.series[b]))
+                try:
+                    tolerance: float = self.app.matching.precursor_tolerance_da(float(points_a[:, 1].mean()))
+                except tk.TclError:
+                    return []
+                if (found := find_parallel(fits[a], points_a, fits[b], points_b, rt_window, tolerance)) is None:
+                    continue
+                dmz, drt, n_pairs = found
+                parallels.append(ParallelSeries(a, b, dmz, drt, n_pairs,
+                                                name_adduct_exchange(dmz, ADDUCTS, 2 * tolerance)))
+        return parallels
+
+    def series_mesh(self) -> MeshOfSeries | None:
+        """
+        Mesh of the two most recent crossing series and its copies for the series parallel to them (None if it is
+        switched off or no two fitted series cross), see series.mesh_with_parallels.
+        """
+        if not self.tk_show_mesh.get() or len(self.series) < 2:
+            return None
+        fits = self.series_fits()
+        return mesh_with_parallels(fits, self.parallel_series(fits))
+
+    def find_mesh_features(self, mesh: MeshOfSeries) -> list[int]:
+        """Measured features at knots of the mesh that are not selected in a series."""
+        points = {f_id: p for f_id in self.app.meas_db.feature_ids if (p := self.app.get_rt_mz(f_id)) is not None}
+        f_ids = np.array(list(points.keys()))
+        rts, mzs = np.array(list(points.values())).T
+        try:
+            max_dmz_ppm, max_dmz_da = self.app.matching.precursor_tolerances()
+            rt_window: float = self.tk_rt_window.get()
+        except tk.TclError:
+            return []
+        found = features_near(mesh.knots, f_ids, rts, mzs, np.minimum(max_dmz_da, max_dmz_ppm * 1e-6 * mzs), rt_window)
+        selected: set[int] = {f_id for f_ids_series in self.series for f_id in f_ids_series}
+        return sorted({f_id for f_ids_knot in found.values() for f_id in f_ids_knot} - selected)
+
     def mark_series(self):
         """Draw the selected features, the fitted line and the predicted members (x) of each series, circle measured
-        features at predicted members."""
+        features at predicted members. The mesh of the last two series is drawn transparent."""
         if self.ax is None:
             return
         for artist in self.series_artists:
@@ -529,6 +590,22 @@ class ScatterPanel(CollapsibleSection):
                     self.series_artists.append(self.ax.scatter(rts_found, mzs_found, s=200, marker="o",
                                                                facecolors="none", edgecolors=color, linewidths=1.5,
                                                                linestyle="--", zorder=13))
+        if (mesh := self.series_mesh()) is not None:
+            # lines parallel to a series in its color, the copies for parallel series as well
+            for mesh_part in mesh.meshes:
+                for lines, i in ((mesh_part.lines_a, mesh.index_a), (mesh_part.lines_b, mesh.index_b)):
+                    collection = LineCollection(lines, colors=SERIES_COLORS[i % len(SERIES_COLORS)], linewidths=1,
+                                                alpha=0.5, zorder=11)
+                    self.ax.add_collection(collection, autolim=False)
+                    self.series_artists.append(collection)
+            rts_knots, mzs_knots = zip(*mesh.knots)
+            self.series_artists.append(self.ax.scatter(rts_knots, mzs_knots, s=12, color="gray", alpha=0.5,
+                                                       zorder=11, label=mesh.describe()))
+            if points := self._points(self.find_mesh_features(mesh)):
+                rts_found, mzs_found = zip(*points)
+                self.series_artists.append(self.ax.scatter(rts_found, mzs_found, s=200, marker="o",
+                                                           facecolors="none", edgecolors="gray", linewidths=1.5,
+                                                           linestyle=":", zorder=13))
         self.ax.set_xlim(*view[0])
         self.ax.set_ylim(*view[1])
         self._update_legend()
@@ -565,7 +642,16 @@ class ScatterPanel(CollapsibleSection):
             self.app.set_status(f"Removed the last feature of series {len(self.series) + 1}.")
             return
         self.mark_series()
-        self.app.set_status(self.describe_series(len(self.series) - 1))
+        text: str = self.describe_series(len(self.series) - 1)
+        current: int = len(self.series) - 1
+        for parallel in self.parallel_series(self.series_fits()):
+            if current in (parallel.index_a, parallel.index_b):
+                text += f" {parallel.describe()}."
+        if (mesh := self.series_mesh()) is not None:
+            found: list[int] = self.find_mesh_features(mesh)
+            text += (f" {mesh.describe()}: {len(mesh.knots)} knots, {len(found)} other features at knots"
+                     + (f" ({', '.join(map(str, found))})" if found else "") + ".")
+        self.app.set_status(text)
 
     def remove_last_series(self):
         if self.series:
