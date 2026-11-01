@@ -1,5 +1,7 @@
 """Written by Avin Jain"""
-import os
+# Windowed PyInstaller build: stdout/stderr are None, so print() and tqdm would crash.
+# Send them to a log file instead, which also shows any later errors.
+import windows_executable
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import cast
