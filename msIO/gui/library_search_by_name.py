@@ -22,7 +22,7 @@ class LibraryNameSearch:
         self._create_gui()
 
     def _create_gui(self):
-        database_frame = tk.Frame(self.root)
+        database_frame = tk.Frame(master=self.root)
         database_frame.pack(fill=tk.X, padx=10, pady=10)
         self.select_database_button = tk.Button(database_frame, text="Select SQLite Database",
                                                 command=self.select_database)
@@ -45,7 +45,7 @@ class LibraryNameSearch:
         self.name_entry.grid(row=0, column=1, padx=5, pady=10)
 
         # Case Sensitive Checkbox
-        self.is_case_sensitive_var = tk.BooleanVar(value=False, name='Case sensitive?')
+        self.is_case_sensitive_var = tk.BooleanVar(search_frame, value=False, name='Case sensitive?')
         case_sensitive_checkbox = tk.Checkbutton(
             search_frame,
             text="Case Sensitive",
@@ -56,7 +56,7 @@ class LibraryNameSearch:
         case_sensitive_checkbox.grid(row=0, column=2, padx=5, pady=10, sticky="w")
 
         # Exact Match Checkbox
-        self.is_exact_name_match = tk.BooleanVar(value=True)
+        self.is_exact_name_match = tk.BooleanVar(search_frame, value=True)
         exact_match_checkbox = tk.Checkbutton(
             search_frame,
             text="Exact Match",
@@ -126,7 +126,7 @@ class LibraryNameSearch:
             return
         try:
             print()
-            print("Searching for:", compound_name)
+            print(f"Searching for {compound_name} case sensitive: {is_case_sensitive}, exact match: {is_exact_name_match}", )
 
             self.search_results: list[int] = self.library.find_by_name(
                 name=compound_name,
