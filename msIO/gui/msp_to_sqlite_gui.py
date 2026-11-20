@@ -11,9 +11,11 @@ PAD = dict(padx=10, pady=5)
 
 
 class MspConverterApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Misc):
+        """root: a window or a frame to embed the converter in."""
         self.root = root
-        root.title('MSP library to SQLite converter')
+        if isinstance(root, (tk.Tk, tk.Toplevel)):
+            root.title('MSP library to SQLite converter')
         root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
 

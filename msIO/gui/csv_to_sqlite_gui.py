@@ -63,9 +63,11 @@ def _find_first(folder: str, patterns: list[str]) -> str | None:
 
 
 class ConverterApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Misc):
+        """root: a window or a frame to embed the converter in."""
         self.root = root
-        root.title('Feature table to SQLite converter')
+        if isinstance(root, (tk.Tk, tk.Toplevel)):
+            root.title('Feature table to SQLite converter')
         root.columnconfigure(0, weight=1)
 
         # feature table

@@ -9,10 +9,12 @@ import matplotlib.pyplot as plt
 
 
 class LibraryNameSearch:
-    def __init__(self, root):
+    def __init__(self, root: tk.Misc):
+        """root: a window, which is then titled and sized, or a frame to embed the viewer in."""
         self.root = root
-        self.root.title("msIO Library Viewer")
-        self.root.geometry("1200x800")
+        if isinstance(root, (tk.Tk, tk.Toplevel)):
+            self.root.title("msIO Library Viewer")
+            self.root.geometry("1200x800")
 
         self.library = None
         self.search_results = []
