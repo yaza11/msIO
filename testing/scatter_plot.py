@@ -1,11 +1,4 @@
-"""
-I found about this new tool yesterday which is 'lazy import'.
-This tool actually increases the processing speed by importing only those
-libraries which are required and ignore others. This tool can only be used with Pythin 3.15 version.
-So if we update python and its libraries and use this tool and this may increase the speed of our GUI.
-"""
-
-import traceback #I have added it to print full tracebacks for hidden errors
+import traceback
 import pandas as pd
 import numpy as np
 import threading
@@ -15,7 +8,7 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 from msIO.feature_managers.db import Library, FeatureManagerDB
-#from testing.library.annotate_with_library import f_id_measfrom testing.mz_rt_plot_panel import nh3_loss, f_id_meas
+
 
 def add_annotation_to_measured_db(f_id_meas: int, f_id_lib: int, results: pd.DataFrame, lib: Library, meas: FeatureManagerDB) -> None:
     """Add a matched library entry to the measured database."""
@@ -559,7 +552,9 @@ class AnnotationGUI:
         else series
                     )
 
-        sorted_results = self.visible_results.sort_values(by=column, ascending=ascending, na_position="last", key=sort_key).reset_index(drop=True)
+        sorted_results = self.visible_results.sort_values(
+            by=column, ascending=ascending, na_position="last", key=sort_key
+        ).reset_index(drop=True)
         self.sort_reverse[column] = not reverse
 
         self.visible_results = sorted_results

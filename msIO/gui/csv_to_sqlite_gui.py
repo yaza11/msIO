@@ -1,280 +1,262 @@
-"""Written by Avin Jain"""
+"""GUI for combining a feature table (MetaboScape or MZmine) with MGF, GNPS and SIRIUS
+results into a SQLite database.
+
+Originally written by Avin Jain.
+"""
+import glob
 import os
+import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox
-from typing import cast
 
-from msIO.feature_managers.combined import ProjectImportManager
-from msIO.feature_managers.metaboscape import MetaboscapeImportManager
-from msIO.feature_managers.gnps import GnpsImportManager
-from msIO.feature_managers.sirius import SiriusImportManager
 from msIO import MgfImportManager
+from msIO.feature_managers.combined import ProjectImportManager
+from msIO.feature_managers.gnps import GnpsImportManager
+from msIO.feature_managers.metaboscape import MetaboscapeImportManager
+from msIO.feature_managers.sirius import SiriusImportManager
 from msIO.sql.session import initiate_db
 
+SOURCE_METABOSCAPE = 'MetaboScape'
+SOURCE_MZMINE = 'MZmine'
 
-def select_csv():
-    path = filedialog.askopenfilename(
-        title="Select CSV file",
-        filetypes=[
-            ("CSV files", "*.csv"),
-            ("All files", "*.*")
-        ]
-    )
+# file name patterns of a default MZmine export, the first match is used
+MZMINE_EXPORT_PATTERNS = {
+    'feature_table': ['*_full_feature_table.csv'],
+    'mgf': ['*_sirius.mgf', '*.mgf'],
+    'gnps': ['*_networking_iimn.graphml', '*_networking_fbmn.graphml', '*.graphml'],
+}
 
-    if path:
-        csv_entry.delete(0, tk.END)
-        csv_entry.insert(0, path)
+PAD = dict(padx=10, pady=5)
 
 
-def select_mgf():
-    path = filedialog.askopenfilename(
-        title="Select MGF file",
-        filetypes=[
-            ("MGF files", "*.mgf"),
-            ("All files", "*.*")
-        ]
-    )
+class PathRow:
+    """Label, entry and browse button in one row of a frame."""
 
-    if path:
-        mgf_entry.delete(0, tk.END)
-        mgf_entry.insert(0, path)
+    def __init__(self, frame: tk.Widget, row: int, label: str, browse):
+        tk.Label(frame, text=label).grid(row=row, column=0, sticky='w', **PAD)
+        self.entry = tk.Entry(frame)
+        self.entry.grid(row=row, column=1, sticky='ew', **PAD)
+        tk.Button(frame, text='Browse...', command=lambda: self.set(browse())).grid(row=row, column=2, **PAD)
 
+    def get(self) -> str:
+        return self.entry.get().strip()
 
-def select_gnps():
-    path = filedialog.askdirectory(
-        title="Select GNPS folder"
-    )
-
-    if path:
-        gnps_entry.delete(0, tk.END)
-        gnps_entry.insert(0, path)
+    def set(self, path: str) -> None:
+        if path:
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, os.path.normpath(path))
 
 
-def select_sirius():
-    path = filedialog.askdirectory(
-        title="Select Sirius folder"
-    )
-
-    if path:
-        sirius_entry.delete(0, tk.END)
-        sirius_entry.insert(0, path)
+def _section(root: tk.Tk, row: int, title: str) -> tk.LabelFrame:
+    frame = tk.LabelFrame(root, text=title, padx=10, pady=10)
+    frame.grid(row=row, column=0, padx=20, pady=10, sticky='ew')
+    frame.columnconfigure(1, weight=1)
+    return frame
 
 
-def select_sqlite():
-    path = filedialog.asksaveasfilename(
-        title="Select SQLite database",
-        defaultextension=".sqlite",
-        filetypes=[
-            ("SQLite files", "*.sqlite"),
-            ("All files", "*.*")
-        ]
-    )
-
-    if path:
-        sqlite_entry.delete(0, tk.END)
-        sqlite_entry.insert(0, path)
+def _find_first(folder: str, patterns: list[str]) -> str | None:
+    for pattern in patterns:
+        matches = sorted(glob.glob(os.path.join(glob.escape(folder), pattern)))
+        if matches:
+            return matches[0]
+    return None
 
 
-def toggle_mz_resolution():
-    if accumulate_var.get():
-        mz_resolution_entry.config(state="normal")
-    else:
-        mz_resolution_entry.config(state="disabled")
+class ConverterApp:
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        root.title('Feature table to SQLite converter')
+        root.columnconfigure(0, weight=1)
 
-
-def convert():
-    path_metaboscape_csv = csv_entry.get()
-    path_mgf = mgf_entry.get()
-    path_gnps = gnps_entry.get()
-    path_sirius = sirius_entry.get()
-    export_tag = sirius_tag_entry.get()
-    db_file = sqlite_entry.get()
-
-    # MetaboScape
-    if not path_metaboscape_csv:
-        messagebox.showerror(
-            "Error",
-            "Please select a CSV file."
-        )
-        return
-
-    if not db_file:
-        messagebox.showerror(
-            "Error", "Please select a SQLite database."
-        )
-        return
-
-    try:
-        # MetaboScape
-        metaboscape_manager = MetaboscapeImportManager(
-            path_metaboscape_csv
-        )
+        # feature table
+        frame = _section(root, 0, 'Feature table')
+        self.source = tk.StringVar(value=SOURCE_MZMINE)
+        source_frame = tk.Frame(frame)
+        source_frame.grid(row=0, column=1, sticky='w')
+        for source in (SOURCE_MZMINE, SOURCE_METABOSCAPE):
+            tk.Radiobutton(source_frame, text=source, value=source, variable=self.source).pack(side='left', padx=(0, 10))
+        tk.Button(frame, text='Fill from MZmine export folder...', command=self.fill_from_mzmine_folder) \
+            .grid(row=1, column=1, sticky='w', **PAD)
+        self.feature_table = PathRow(frame, 2, 'CSV file', lambda: self._ask_file('CSV', '*.csv'))
+        self.intensity = tk.StringVar(value='area')
+        intensity_frame = tk.Frame(frame)
+        intensity_frame.grid(row=3, column=1, sticky='w')
+        tk.Label(intensity_frame, text='MZmine intensity:').pack(side='left')
+        for value in ('area', 'height'):
+            tk.Radiobutton(intensity_frame, text=value, value=value, variable=self.intensity).pack(side='left')
 
         # MGF
-        mgf_manager = None
-        # Only create one if the user selected an MGF file.
-        if path_mgf:
-            if accumulate_var.get():
-                mz_resolution = mz_resolution_entry.get()
-                if not mz_resolution:
-                    messagebox.showerror("Error", "Please enter an m/z resolution."
-                                         )
-                    return
-
-                # Convert the text from the GUI into an integer.
-                mz_resolution = int(mz_resolution)
-                mgf_manager = MgfImportManager(
-                    path_mgf,
-                    accumulate_spectra=True,
-                    mz_resolution=mz_resolution
-                )
-            else:
-                mgf_manager = MgfImportManager(
-                    path_mgf,
-                    accumulate_spectra=False
-                )
+        frame = _section(root, 1, 'MGF (optional)')
+        self.mgf = PathRow(frame, 0, 'MGF file', lambda: self._ask_file('MGF', '*.mgf'))
+        self.accumulate = tk.BooleanVar(value=True)
+        tk.Checkbutton(frame, text='Accumulate spectra', variable=self.accumulate,
+                       command=self._toggle_mz_resolution).grid(row=1, column=1, sticky='w', **PAD)
+        tk.Label(frame, text='m/z resolution').grid(row=2, column=0, sticky='w', **PAD)
+        self.mz_resolution = tk.Entry(frame)
+        self.mz_resolution.insert(0, '40000')
+        self.mz_resolution.grid(row=2, column=1, sticky='ew', **PAD)
 
         # GNPS
-        gnps_manager = None
-        if path_gnps:
-            gnps_manager = GnpsImportManager(
-                path_gnps_folder=path_gnps
-            )
+        frame = _section(root, 2, 'Molecular network (optional)')
+        self.gnps = PathRow(frame, 0, 'GNPS folder or\nMZmine .graphml', self._ask_gnps)
 
         # SIRIUS
-        sirius_manager = None
-        if path_sirius:
-            if export_tag:
-                sirius_manager = SiriusImportManager(
-                    path_folder_export=path_sirius,
-                    export_tag=export_tag
-                )
-            else:
-                sirius_manager = SiriusImportManager(
-                    path_folder_export=path_sirius
-                )
+        frame = _section(root, 3, 'SIRIUS (optional)')
+        self.sirius = PathRow(frame, 0, 'Export folder', lambda: filedialog.askdirectory(title='Select SIRIUS folder'))
+        tk.Label(frame, text='Export tag').grid(row=1, column=0, sticky='w', **PAD)
+        self.sirius_tag = tk.Entry(frame)
+        self.sirius_tag.grid(row=1, column=1, sticky='ew', **PAD)
 
-        # Combine all import managers
-        project_import_manager = ProjectImportManager(
-            metaboscape_manager=metaboscape_manager,
-            mgf_manager=mgf_manager,
-            gnps_manager=gnps_manager,
-            sirius_manager=sirius_manager
+        # output
+        frame = _section(root, 4, 'Output')
+        self.sqlite = PathRow(frame, 0, 'SQLite file', lambda: filedialog.asksaveasfilename(
+            title='Select SQLite database', defaultextension='.sqlite',
+            filetypes=[('SQLite files', '*.sqlite *.db'), ('All files', '*.*')]))
+
+        self.convert_button = tk.Button(root, text='Convert', width=15, command=self.convert)
+        self.convert_button.grid(row=5, column=0, pady=(10, 0))
+        self.status = tk.Label(root, text='', fg='gray30')
+        self.status.grid(row=6, column=0, pady=(5, 15))
+
+    # --- browsing -------------------------------------------------------------------------
+    @staticmethod
+    def _ask_file(name: str, pattern: str) -> str:
+        return filedialog.askopenfilename(
+            title=f'Select {name} file', filetypes=[(f'{name} files', pattern), ('All files', '*.*')])
+
+    def _ask_gnps(self) -> str:
+        if self.source.get() == SOURCE_MZMINE:
+            return self._ask_file('GraphML', '*.graphml')
+        return filedialog.askdirectory(title='Select GNPS folder')
+
+    def _toggle_mz_resolution(self) -> None:
+        self.mz_resolution.config(state='normal' if self.accumulate.get() else 'disabled')
+
+    def fill_from_mzmine_folder(self) -> None:
+        folder = filedialog.askdirectory(title='Select MZmine export folder')
+        if not folder:
+            return
+        self.source.set(SOURCE_MZMINE)
+        found = {key: _find_first(folder, patterns) for key, patterns in MZMINE_EXPORT_PATTERNS.items()}
+        if found['feature_table'] is None:
+            messagebox.showwarning('Not found', f'No *_full_feature_table.csv found in\n{folder}')
+        self.feature_table.set(found['feature_table'])
+        self.mgf.set(found['mgf'])
+        self.gnps.set(found['gnps'])
+        if not self.sqlite.get() and found['feature_table']:
+            self.sqlite.set(found['feature_table'].removesuffix('_full_feature_table.csv') + '.sqlite')
+
+    # --- conversion -----------------------------------------------------------------------
+    def _collect_settings(self) -> dict:
+        """Validate the inputs, raise ValueError with a user-readable message if something is wrong."""
+        settings = dict(
+            source=self.source.get(),
+            feature_table=self.feature_table.get(),
+            intensity=self.intensity.get(),
+            mgf=self.mgf.get(),
+            mz_resolution=None,
+            gnps=self.gnps.get(),
+            sirius=self.sirius.get(),
+            sirius_tag=self.sirius_tag.get() or None,
+            sqlite=self.sqlite.get(),
+        )
+        if not settings['feature_table']:
+            raise ValueError('Please select a feature table (CSV file).')
+        if not settings['sqlite']:
+            raise ValueError('Please select an output SQLite file.')
+        for key in ('feature_table', 'mgf', 'gnps', 'sirius'):
+            if settings[key] and not os.path.exists(settings[key]):
+                raise ValueError(f'Path does not exist:\n{settings[key]}')
+        if settings['mgf'] and self.accumulate.get():
+            try:
+                settings['mz_resolution'] = int(self.mz_resolution.get())
+            except ValueError:
+                raise ValueError('The m/z resolution must be an integer, e.g. 40000.')
+        return settings
+
+    def convert(self) -> None:
+        try:
+            settings = self._collect_settings()
+        except ValueError as e:
+            messagebox.showerror('Error', str(e))
+            return
+        if os.path.exists(settings['sqlite']) and not messagebox.askyesno(
+                'Overwrite?', f'{settings["sqlite"]}\nalready exists. Overwrite it?'):
+            return
+
+        self.convert_button.config(state='disabled')
+        threading.Thread(target=self._run, args=(settings,), daemon=True).start()
+
+    def _set_status(self, text: str) -> None:
+        self.root.after(0, lambda: self.status.config(text=text))
+
+    def _run(self, settings: dict) -> None:
+        try:
+            run_conversion(settings, self._set_status)
+        except Exception as e:  # report any failure in the GUI
+            error = f'{type(e).__name__}: {e}'
+            self.root.after(0, lambda: self._finish('Conversion failed.', error))
+        else:
+            self.root.after(0, lambda: self._finish('Done.'))
+
+    def _finish(self, status: str, error: str = None) -> None:
+        self.status.config(text=status)
+        self.convert_button.config(state='normal')
+        if error is None:
+            messagebox.showinfo('Success', 'Database written successfully.')
+        else:
+            messagebox.showerror('Error', error)
+
+
+def run_conversion(settings: dict, report=print) -> None:
+    """Read all selected inputs and write them to the SQLite file in settings['sqlite']."""
+    report('Reading feature table...')
+    if settings['source'] == SOURCE_MZMINE:
+        feature_table = MetaboscapeImportManager.from_mzmine(settings['feature_table'], settings['intensity'])
+    else:
+        feature_table = MetaboscapeImportManager(settings['feature_table'])
+
+    mgf = None
+    if settings['mgf']:
+        report('Reading MGF file...')
+        mgf = MgfImportManager(
+            settings['mgf'],
+            accumulate_spectra=settings['mz_resolution'] is not None,
+            mz_resolution=settings['mz_resolution'],
         )
 
-        # Creating SQLite database
-        initiate_db(db_file)
-        project_import_manager.to_sql(db_file, feature_ids=metaboscape_manager.feature_ids)
+    gnps = None
+    if path_gnps := settings['gnps']:
+        report('Reading molecular network...')
+        if os.path.isdir(path_gnps):
+            gnps = GnpsImportManager(path_gnps_folder=path_gnps)
+        elif settings['source'] == SOURCE_MZMINE:
+            gnps = GnpsImportManager.from_mzmine(path_gnps)
+        else:
+            gnps = GnpsImportManager(path_file_gnps_graphml=path_gnps)
 
-        messagebox.showinfo("Success!", "CSV successfully converted to SQLite.")
+    sirius = None
+    if settings['sirius']:
+        report('Reading SIRIUS results...')
+        sirius = SiriusImportManager(path_folder_export=settings['sirius'], export_tag=settings['sirius_tag'])
 
-    except Exception as e:
-        messagebox.showerror("Error!", str(e))
+    project = ProjectImportManager(
+        metaboscape_manager=feature_table,
+        mgf_manager=mgf,
+        gnps_manager=gnps,
+        sirius_manager=sirius,
+    )
+
+    report(f'Writing {len(feature_table.feature_ids)} features to database...')
+    initiate_db(settings['sqlite'])
+    project.to_sql(settings['sqlite'], feature_ids=feature_table.feature_ids)
 
 
-# GUI
+def main() -> None:
+    root = tk.Tk()
+    ConverterApp(root)
+    root.mainloop()
 
-root = tk.Tk()
-root.title("CSV to SQLite Converter")
-root.geometry("750x700")
 
-root.columnconfigure(0,
-                     weight=1)  # Allowing the main column to expand when the window is resized (Got to know about this from StackOverflow)
-
-# Metaboscape
-
-metaboscape_frame = tk.LabelFrame(root, text="Metaboscape", pady=10, padx=10)
-metaboscape_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
-
-# Expanding the middle coulumn
-metaboscape_frame.columnconfigure(1, weight=1)
-
-tk.Label(metaboscape_frame, text="Input CSV").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-csv_entry = tk.Entry(metaboscape_frame)
-csv_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-tk.Button(metaboscape_frame, text="Browse...", command=select_csv).grid(row=0, column=2, padx=10, pady=5)
-
-# MGF
-
-mgf_frame = tk.LabelFrame(root, text="MGF", pady=10, padx=10)
-mgf_frame.grid(row=1, column=0, padx=20, pady=10, sticky="ew")
-
-# Expanding the middle coulumn
-mgf_frame.columnconfigure(1, weight=1)
-
-tk.Label(mgf_frame, text="MGF File").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-mgf_entry = tk.Entry(mgf_frame)
-mgf_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-tk.Button(mgf_frame, text="Browse...", command=select_mgf).grid(row=0, column=2, padx=10, pady=5)
-
-accumulate_var = tk.BooleanVar(value=False)
-
-tk.Checkbutton(
-    mgf_frame, text="Accumulate spectra", variable=accumulate_var, command=toggle_mz_resolution
-).grid(row=1, column=1, padx=10, pady=5, sticky="w")
-
-# MZ resoltuion
-
-tk.Label(mgf_frame, text="m/z Resolution").grid(row=2, column=0, padx=10, pady=5, sticky="w")
-
-mz_resolution_entry = tk.Entry(mgf_frame, state="disabled")
-
-mz_resolution_entry.grid(row=2, column=1, padx=10, pady=5, sticky="ew")
-
-# GNPS
-
-gnps_frame = tk.LabelFrame(root, text="GNPS", pady=10, padx=10)
-gnps_frame.grid(row=2, column=0, padx=20, pady=10, sticky="ew")
-
-# Expanding the middle coulumn
-gnps_frame.columnconfigure(1, weight=1)
-
-tk.Label(gnps_frame, text="GNPS Folder").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-gnps_entry = tk.Entry(gnps_frame)
-gnps_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-tk.Button(gnps_frame, text="Browse...", command=select_gnps).grid(row=0, column=2, padx=10, pady=5)
-
-# SIRIUS
-
-sirius_frame = tk.LabelFrame(root, text="SIRIUS", pady=10, padx=10)
-sirius_frame.grid(row=3, column=0, padx=20, pady=(20, 10), sticky="ew")
-
-# Expanding the middle coulumn
-sirius_frame.columnconfigure(1, weight=1)
-
-tk.Label(sirius_frame, text="Input Folder").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-sirius_entry = tk.Entry(sirius_frame)
-sirius_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-tk.Button(sirius_frame, text="Browse...", command=select_sirius).grid(row=0, column=2, padx=10, pady=5)
-
-tk.Label(sirius_frame, text="Export Tag").grid(row=1, column=0, padx=10, pady=5, sticky="w")
-
-sirius_tag_entry = tk.Entry(sirius_frame, width=20)
-sirius_tag_entry.grid(row=1, column=1, padx=10, pady=5, sticky="ew")
-
-# Output
-
-sqlite_frame = tk.LabelFrame(root, text="Output", pady=10, padx=10)
-sqlite_frame.grid(row=4, column=0, padx=20, pady=10, sticky="ew")
-sqlite_frame.columnconfigure(1, weight=1)
-
-tk.Label(sqlite_frame, text="SQLite File").grid(row=0, column=0, padx=10, pady=5, sticky="w")
-
-sqlite_entry = tk.Entry(sqlite_frame)
-sqlite_entry.grid(row=0, column=1, padx=10, pady=5, sticky="ew")
-
-tk.Button(sqlite_frame, text="Browse...", command=select_sqlite).grid(row=0, column=2, padx=10, pady=5)
-
-# Convert button
-tk.Button(root, text="Convert", command=convert, width=15).grid(row=5, column=0, pady=20)
-
-# Starting GUI
-root.mainloop()
+if __name__ == '__main__':
+    main()

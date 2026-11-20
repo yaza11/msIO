@@ -1,9 +1,24 @@
+from typing import Literal
+
 import numpy as np
 import pandas as pd
 
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.metaboscape import FeatureMetaboScape, METABOSCAPE_CSV_RENAME_COLUMNS
 from msIO.environmental.sample import Sample
+
+# MZmine full feature table column -> attribute of FeatureMetaboScape
+MZMINE_CSV_RENAME_COLUMNS: dict[str, str] = {
+    'id': 'feature_id',
+    'rt': 'rt_seconds',  # in minutes, converted after renaming
+    'mz': 'mz_meas',
+    'ccs': 'CCS',
+    'ion_identities:neutral_mass': 'M_metaboscape',
+    'preferred_annotation:compound_name': 'name_metaboscape',
+    'preferred_annotation:mol_formula': 'formula_metaboscape',
+    'preferred_annotation:adduct': 'adduct_metaboscape',
+    'preferred_annotation:annotation_method': 'annotation_source',
+}
 
 
 class MetaboscapeImportManager(FeatureManager):
@@ -40,6 +55,35 @@ class MetaboscapeImportManager(FeatureManager):
         new._df = df
         new._sample_name_to_sample = {}
         return new
+
+    @classmethod
+    def from_mzmine(
+            cls, path_mzmine_feature_table: str, intensity: Literal['area', 'height'] = 'area'
+    ) -> 'MetaboscapeImportManager':
+        """Read a full feature table exported by MZmine (CSV export, all columns).
+
+        Columns are mapped onto the MetaboScape schema so the resulting features end up
+        in the same table of the database.
+        """
+        header = pd.read_csv(path_mzmine_feature_table, nrows=0).columns
+        missing = {'id', 'rt'} - set(header)
+        if missing:
+            raise ValueError(
+                f'{path_mzmine_feature_table} does not look like an MZmine full feature table '
+                f'(missing columns: {", ".join(sorted(missing))})'
+            )
+
+        prefix, suffix = 'datafile:', f':{intensity}'
+        intensity_columns = [c for c in header if c.startswith(prefix) and c.endswith(suffix)]
+        meta_columns = [c for c in MZMINE_CSV_RENAME_COLUMNS if c in header]
+
+        df = pd.read_csv(path_mzmine_feature_table, usecols=meta_columns + intensity_columns, low_memory=False)
+        df = df.rename(columns=MZMINE_CSV_RENAME_COLUMNS | {
+            c: c[len(prefix):-len(suffix)] for c in intensity_columns
+        })
+        df.loc[:, 'rt_seconds'] = df.rt_seconds * 60  # MZmine exports retention times in minutes
+        df.loc[:, 'feature_id'] = df.feature_id.astype(int)
+        return cls.from_dataframe(df)
 
     def _add_from_clipboard(self, path_file: str):
         # rows should match 1 to 1
