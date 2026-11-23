@@ -268,6 +268,48 @@ class ResultsPanel(CollapsibleSection):
         self.tk_tree.see(item)
         return True
 
+    def clear_selection(self):
+        """Deselect the selected row (e.g. a feature without row was clicked in the plot)."""
+        if self.tk_tree.selection():
+            self._ignore_pending_select_events()
+            self.tk_tree.selection_set(())
+
+    def select_adjacent_feature(self, step: int):
+        """
+        Select the first row of the next (step 1) or previous (step -1) measured feature in the shown order, i.e. skip
+        the other matches of the selected feature. Without selection, the first / last row is selected.
+        """
+        items: tuple[str, ...] = self.tk_tree.get_children()
+        if not items:
+            return
+        f_ids: np.ndarray = self.table.feature_id_meas.to_numpy()
+        if not (selection := self.tk_tree.selection()):
+            idx = 0 if step > 0 else len(items) - 1
+        else:
+            idx = self.tk_tree.index(selection[0])
+            current = f_ids[idx]
+            while 0 <= idx < len(items) and f_ids[idx] == current:
+                idx += step
+            if not 0 <= idx < len(items):
+                self.app.set_status("No further feature in the table.")
+                return
+        # first row of that feature
+        while idx > 0 and f_ids[idx - 1] == f_ids[idx]:
+            idx -= 1
+        self.tk_tree.selection_set(items[idx])
+        self.tk_tree.focus(items[idx])
+        self.tk_tree.see(items[idx])
+
+    def focus_table(self):
+        """Keyboard focus to the table (arrow keys move the selection), the first row is selected if none is."""
+        items: tuple[str, ...] = self.tk_tree.get_children()
+        if items and not self.tk_tree.selection():
+            self.tk_tree.selection_set(items[0])
+        if selection := self.tk_tree.selection():
+            self.tk_tree.focus(selection[0])
+            self.tk_tree.see(selection[0])
+        self.tk_tree.focus_set()
+
     def _ignore_pending_select_events(self):
         """
         Selection events caused by the program (e.g. deleting and restoring the selected row) arrive later through the

@@ -38,6 +38,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from msIO.feature_managers.db import FeatureManagerDB, Library
@@ -57,6 +58,7 @@ from msIO.gui.annotation.matching_panel import MatchingPanel
 from msIO.gui.annotation.overview_panel import OverviewPanel
 from msIO.gui.annotation.results_panel import ResultsPanel
 from msIO.gui.annotation.scatter_panel import ScatterPanel
+from msIO.gui.annotation.shortcuts import bind_shortcuts, show_shortcuts
 
 
 class AnnotationGUI:
@@ -78,14 +80,17 @@ class AnnotationGUI:
     # height of the overview as fraction of the plot area, until the divider is moved
     OVERVIEW_HEIGHT_FRACTION: float = 0.55
 
-    def __init__(self, root: tk.Tk):
-        self.tk_root: tk.Tk = root
-        self.tk_root.title("Annotation GUI")
-        # 80 % of the screen, the plots need the space
-        width: int = int(self.tk_root.winfo_screenwidth() * 0.8)
-        height: int = int(self.tk_root.winfo_screenheight() * 0.8)
-        self.tk_root.geometry(f"{width}x{height}+10+10")
-        self.tk_root.protocol("WM_DELETE_WINDOW", self.on_close)
+    def __init__(self, root: tk.Misc):
+        """root: a window (Tk / Toplevel), which is then set up for this GUI, or a frame to embed the GUI in (e.g. a
+        tab of msIO.gui.main, which then has to call can_close before closing its window)."""
+        self.tk_root: tk.Misc = root
+        if isinstance(root, (tk.Tk, tk.Toplevel)):
+            self.tk_root.title("Annotation GUI")
+            # 80 % of the screen, the plots need the space
+            width: int = int(self.tk_root.winfo_screenwidth() * 0.8)
+            height: int = int(self.tk_root.winfo_screenheight() * 0.8)
+            self.tk_root.geometry(f"{width}x{height}+10+10")
+            self.tk_root.protocol("WM_DELETE_WINDOW", self.on_close)
         # tk variables are created with root as master: without it they belong to the first Tk instance of the process,
         # which is not this window if e.g. an IPython console created one before, and the entries would stay empty
 
@@ -116,6 +121,9 @@ class AnnotationGUI:
         self.annotations: AnnotationStore = AnnotationStore()
         self.annotation_window: AnnotationManagerWindow = None
 
+        # (measured database, (feature ids, RTs in min, m/z)) of all measured features, see feature_positions
+        self._feature_positions: tuple = None
+
         self.compared_f_ids: list[int] = []  # up to two features selected by shift-click
         self.last_clicked_f_id: int = None  # in the scatter plot
 
@@ -132,8 +140,9 @@ class AnnotationGUI:
         # status bar is packed before the main area, so it keeps its space when the window shrinks
         tk_status_bar = ttk.Frame(self.tk_root, relief="sunken")
         tk_status_bar.pack(side="bottom", fill="x")
+        ttk.Button(tk_status_bar, text="Shortcuts (F1)", command=lambda: show_shortcuts(self)).pack(side="right")
         self.tk_status_field = ttk.Label(
-            tk_status_bar, text="Please load both databases to begin.", anchor="w", padding=(5, 2)
+            tk_status_bar, text="Please load both databases to begin (F1: shortcuts).", anchor="w", padding=(5, 2)
         )
         self.tk_status_field.pack(side="left", fill="x", expand=True)
         # only shown while the library is searched or indexed, see show_progress
@@ -170,6 +179,7 @@ class AnnotationGUI:
             self.tk_plot_area.sashpos(0, int(event.height * self.OVERVIEW_HEIGHT_FRACTION))
 
         self.tk_main_area.bind("<Configure>", set_initial_dividers)
+        bind_shortcuts(self)
 
     def on_toggle_plot_section(self):
         """
@@ -399,10 +409,14 @@ class AnnotationGUI:
 
         threading.Thread(target=worker, daemon=True).start()
 
+    def can_close(self) -> bool:
+        """Warn about annotation changes that were not written to the database, True if the window may be closed."""
+        return self._confirm_discarding_unsaved_annotations()
+
     def on_close(self):
         """Closing the main window: warn about annotation changes that were not written to the database."""
-        if self._confirm_discarding_unsaved_annotations():
-            self.tk_root.destroy()
+        if self.can_close():
+            self.tk_root.winfo_toplevel().destroy()
 
     # ------------------------------------------------------------------------------------------------------------------
     # Matching
@@ -597,8 +611,7 @@ class AnnotationGUI:
         self.apply_filters()
 
     def on_click_mz_from_compound(self):
-        if self.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        if not self.require_meas_db():
             return
         MzFromCompoundDialog(self)
 
@@ -665,8 +678,7 @@ class AnnotationGUI:
                             f"{f_id_meas}.")
 
     def on_click_add_manual_annotation(self):
-        if self.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        if not self.require_meas_db():
             return
         # a target of the m/z filter at the selected row is the suggested compound
         compound: MzTarget | None = None
@@ -679,8 +691,7 @@ class AnnotationGUI:
         Open the dialog to mark a feature as in-source fragment, duplicate, isotope peak or adduct of another one,
         prefilled with the compared features (the dialog orders them by m/z for fragments and isotope peaks).
         """
-        if self.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        if not self.require_meas_db():
             return
         if len(self.compared_f_ids) == 2:
             f_id, f_id_reference = sorted(self.compared_f_ids, key=lambda f_id_: self.meas_db.mzs[f_id_])
@@ -729,8 +740,7 @@ class AnnotationGUI:
         Write the annotated features (library matches and manual annotations as listed in "Manage annotations", incl.
         the unsaved changes) to a new database that can be loaded as library.
         """
-        if self.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        if not self.require_meas_db():
             return
         annotations: dict[AnnotationKey, dict] = self.annotations.kept()
         if not (n_entries := sum(key[0] in EXPORTED_KINDS for key in annotations)):
@@ -762,8 +772,7 @@ class AnnotationGUI:
                         + (f" ({n_skipped} in-source fragment annotation(s) left out)." if n_skipped else "."))
 
     def on_click_manage_annotations(self):
-        if self.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        if not self.require_meas_db():
             return
         if self.annotation_window is None:
             self.annotation_window = AnnotationManagerWindow(self)
@@ -781,11 +790,31 @@ class AnnotationGUI:
             return None
         return rt / 60, mz
 
+    def feature_positions(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(feature ids, RTs in min, m/z) of the measured features with both, cached for the measured database."""
+        if self._feature_positions is None or self._feature_positions[0] is not self.meas_db:
+            points = {f_id: p for f_id in self.meas_db.feature_ids if (p := self.get_rt_mz(f_id)) is not None}
+            f_ids = np.array(list(points), dtype=int)
+            rts, mzs = np.array(list(points.values()), dtype=float).reshape(-1, 2).T
+            self._feature_positions = (self.meas_db, (f_ids, rts, mzs))
+        return self._feature_positions[1]
+
+    def require_meas_db(self) -> bool:
+        """True if a measured database is loaded, otherwise ask to load one."""
+        if self.meas_db is None:
+            messagebox.showerror("Error", "Please load a measured database first.")
+            return False
+        return True
+
     def on_match_selected(self, match: pd.Series, by_program: bool = False):
-        """Row of the results table selected: mark its feature in the scatter plot and show the match (or feature)."""
-        self.scatter.mark_selected_feature(int(match.feature_id_meas))
-        if by_program:  # selected by the program (scatter click, restored selection): keep the overview
+        """
+        Row of the results table selected: mark its feature in the scatter plot (panned to it if it is outside the
+        view) and show the match (or feature).
+        """
+        if by_program:  # selected by the program (scatter click, restored selection): keep the overview and the view
+            self.scatter.mark_selected_feature(int(match.feature_id_meas))
             return
+        self.scatter.mark_selected_feature(int(match.feature_id_meas), show=True)
         # e.g. selected again after sorting or filtering
         if self._overview_key_of_row(match) != self.overview.shown_key:
             self.clear_comparison()
@@ -818,6 +847,8 @@ class AnnotationGUI:
             self.scatter.mark_selected_feature(f_id)
             self._show_row(self.results.selected_match())
         else:
+            # the table has no row of the feature, the selected row would belong to another one
+            self.results.clear_selection()
             self.show_feature(f_id)
 
     def show_feature(self, f_id: int):
@@ -826,10 +857,12 @@ class AnnotationGUI:
         self.overview.request("feature", [f_id])
 
     def show_feature_ids(self, f_ids: list[int]):
-        """Feature ID field of the overview: one feature is shown alone, two are compared."""
+        """Feature ID field of the overview: one feature is selected (as by a click in the plot), two are compared."""
         if len(f_ids) == 1:
-            self.clear_comparison()
-            self.show_feature(f_ids[0])
+            # like a click on the feature in the plot, which is panned to it
+            self.on_scatter_click(f_ids[0])
+            if (point := self.get_rt_mz(f_ids[0])) is not None:
+                self.scatter.show_point(*point)
         else:
             self.compared_f_ids = list(f_ids)
             self.scatter.mark_compared_features()

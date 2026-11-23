@@ -114,6 +114,10 @@ class FilterPanel(CollapsibleSection):
         self.last_values: tuple[str, ...] = None
         self.tk_add_dummies: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
         self.tk_hide_related: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
+        # restrict the table to the scatter plot: features marked there (highlights, mass differences, series) and the
+        # visible region (follows zooming and panning)
+        self.tk_only_marked: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
+        self.tk_only_visible: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
 
         # each filter occupies a group of two grid columns: label, entry
         def add_filter(row: int, group: int, label: str, width: int = 16) -> ttk.Entry:
@@ -162,6 +166,14 @@ class FilterPanel(CollapsibleSection):
         ttk.Button(tk_buttons, text="Remove filters", command=app.on_click_remove_filters).pack(side="right")
         ttk.Button(tk_buttons, text="m/z from compound ...", command=app.on_click_mz_from_compound).pack(
             side="right", padx=5)
+
+        tk_plot_filters = ttk.Frame(self.body)
+        tk_plot_filters.grid(row=8, column=0, columnspan=6, sticky="w", pady=(2, 0))
+        ttk.Label(tk_plot_filters, text="Scatter plot:").pack(side="left", padx=(10, 0))
+        ttk.Checkbutton(tk_plot_filters, text="only features marked there (highlight, mass differences, series; M)",
+                        variable=self.tk_only_marked, command=lambda: app.apply_filters()).pack(side="left", padx=6)
+        ttk.Checkbutton(tk_plot_filters, text="only the visible region (follows zooming; V)",
+                        variable=self.tk_only_visible, command=lambda: app.apply_filters()).pack(side="left")
 
         # (entry, column of the results table, name in error messages)
         self.feature_intervals: list[tuple[ttk.Entry, str, str]] = [
@@ -272,6 +284,20 @@ class FilterPanel(CollapsibleSection):
             for substring in substrings
         ])
 
+    def _plot_mask(self, table: pd.DataFrame) -> np.ndarray:
+        """Rows of features marked in the scatter plot and / or in its visible region (if these filters are set)."""
+        mask = np.ones(table.shape[0], dtype=bool)
+        scatter = self.app.scatter
+        if self.tk_only_marked.get():
+            mask &= table.feature_id_meas.isin(scatter.marked_feature_ids()).to_numpy(dtype=bool)
+        scatter.filtered_view = None
+        if self.tk_only_visible.get() and (region := scatter.visible_region()) is not None:
+            (rt_min, rt_max), (mz_min, mz_max) = region
+            mask &= in_intervals(table.RT, [(rt_min, rt_max, True, True)])
+            mask &= in_intervals(table.mz_meas, [(mz_min, mz_max, True, True)])
+            scatter.filtered_view = region  # the table is up to date for this region
+        return mask
+
     def compute_mask(self, table: pd.DataFrame) -> np.ndarray:
         """
         Rows of the results table (matches and possibly dummy rows) that pass all filters.
@@ -283,6 +309,7 @@ class FilterPanel(CollapsibleSection):
         if self.tk_hide_related.get():
             related: set[int] = self.app.annotations.annotated_feature_ids(kinds=FEATURE_RELATION_KINDS)
             feature_mask &= ~table.feature_id_meas.isin(related).to_numpy(dtype=bool)
+        feature_mask &= self._plot_mask(table)
 
         match_mask = self._apply_interval_filters(table, self.match_intervals)
         match_mask &= self._apply_minimum_filters(table, [

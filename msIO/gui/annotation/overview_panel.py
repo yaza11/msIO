@@ -129,6 +129,7 @@ class OverviewPanel(CollapsibleSection):
         self.request_number += 1
         self.shown_key = key
         self.pending = (self.request_number, key, lib_db, match_result, annotations, data, settings)
+        self._show_feature_ids(f_ids)
         if not reuse_data:
             self.app.set_status(f"Plotting {mode} of feature(s) {', '.join(map(str, f_ids))} ...")
         if not self.running:
@@ -250,10 +251,25 @@ class OverviewPanel(CollapsibleSection):
         self.annotation_cutoff_job = None
         self.redraw()
 
+    def _show_feature_ids(self, f_ids: list[int]):
+        """The feature ID field shows the shown feature(s), unless an ID is being typed."""
+        try:
+            if self.app.tk_root.focus_get() is self.tk_feature_ids_entry:
+                return
+        except KeyError:  # tkinter can't resolve some internal widgets, e.g. the open list of a combobox
+            pass
+        self.tk_feature_ids_entry.delete(0, tk.END)
+        self.tk_feature_ids_entry.insert(0, " ".join(map(str, f_ids)))
+
+    def focus_feature_ids(self):
+        """Keyboard focus to the feature ID field, its text selected to type over it."""
+        self.set_expanded(True)
+        self.tk_feature_ids_entry.focus_set()
+        self.tk_feature_ids_entry.select_range(0, tk.END)
+
     def on_submit_feature_ids(self):
-        """Feature ID field: one ID shows that feature, two IDs (separated by , ; or space) compare them."""
-        if self.app.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        """Feature ID field: one ID selects that feature, two IDs (separated by , ; or space) compare them."""
+        if not self.app.require_meas_db():
             return
         try:
             f_ids = [int(part) for part in re.split(r"[,;\s]+", self.tk_feature_ids_entry.get().strip()) if part]

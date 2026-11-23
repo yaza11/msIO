@@ -42,10 +42,10 @@ class MainWindow:
         self.notebook = ttk.Notebook(root)
         self.notebook.pack(fill="both", expand=True)
 
-        self.annotation = AnnotationGUI(self._add_tab("Annotation"))
+        self.feature_table_converter = ConverterApp(self._add_form_tab("MZmine/MetaboScape --> SQLite"))
+        self.msp_converter = MspConverterApp(self._add_form_tab("MSP library --> SQLite"))
         self.library_viewer = LibraryNameSearch(self._add_tab("Library viewer"))
-        self.feature_table_converter = ConverterApp(self._add_form_tab("Feature table → SQLite"))
-        self.msp_converter = MspConverterApp(self._add_form_tab("MSP → SQLite"))
+        self.annotation = AnnotationGUI(self._add_tab("Annotation"))
         if os.path.isfile(PATH_GUIDE):
             self._add_guide(self._add_tab("Guide"))
 
