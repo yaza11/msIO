@@ -6,7 +6,11 @@ import os
 # paths relative to this spec file, so the build works on any machine
 # main.py looks for "about" next to its own __file__, which for the entry script is the bundle root
 datas = [(os.path.join(SPECPATH, 'msIO', 'gui', 'about'), '.')]
-binaries = [(os.path.join(SPECPATH, '.venv_mw', 'Lib', 'site-packages', 'bin', 'IsoSpecCppPy.dll'), 'bin')]
+binaries = []
+# older IsoSpecPy builds ship a separate DLL in site-packages/bin, newer ones a .pyd that PyInstaller finds itself
+_isospec_dll = os.path.join(SPECPATH, '.venv', 'Lib', 'site-packages', 'bin', 'IsoSpecCppPy.dll')
+if os.path.isfile(_isospec_dll):
+    binaries.append((_isospec_dll, 'bin'))
 hiddenimports = []
 datas += collect_data_files('LipidCalculator')
 tmp_ret = collect_all('matchms')
