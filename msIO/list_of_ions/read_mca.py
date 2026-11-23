@@ -234,19 +234,4 @@ class McaImportManager:
 
 
 if __name__ == "__main__":
-    file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\MetaboScape\annotations.mca"
-    mgr = McaImportManager(file)
-
-    # multiple annotations?
-    multi_ann = []
-    for mol_ann in mgr.molecule_annotations:
-        if len([ann for ann in mol_ann.annotations if ann.source.tool_name == 'SmartFormula']) > 1:
-            # should both be spectral library annotations
-            multi_ann.append(mol_ann)
-
-    # results = mgr.find_annotations(mz=1319.34919, rt_seconds=62.15 * 60, ccs=405, mz_tol_ppm=5, rt_tol_seconds=0.02 * 60, ccs_tol_A=.2)
-    results = mgr.find_annotations(mz=330.24252, rt_seconds=1.98 * 60, ccs=178.2, mz_tol_ppm=5, rt_tol_seconds=0.02 * 60, ccs_tol_A=.2)
-    for r in results:
-        print(f"Match: Ion m/z={r.ion.mz:.6f}, rt={r.ion.rt_seconds:.2f}s, ccs={r.ion.ccs:.2f} Å, deltas={r.deltas}")
-        for a in r.annotations:
-            print(f"  Annotation: {a.name} ({a.formula}), source={a.source.tool_name if a.source else None}, scores={[s.name for s in a.scores]}")
+    ...
