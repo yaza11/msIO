@@ -9,7 +9,8 @@ import pandas as pd
 from LipidCalculator import Adduct, CompoundDict
 
 from msIO.gui.annotation.common import (
-    ADDUCTS, ANNOTATION_KIND_LABELS, FEATURE_RELATIONS, AnnotationKey, open_ipl_batch, open_ipl_builder
+    ADDUCTS, ANNOTATION_KIND_LABELS, FEATURE_RELATIONS, AnnotationKey, TreeSorter, add_tooltip, open_ipl_batch,
+    open_ipl_builder
 )
 from msIO.gui.annotation.matching import C13_DISTANCE, MzTarget
 
@@ -25,6 +26,10 @@ class AnnotationManagerWindow(tk.Toplevel):
     already in the database. Each can be kept or discarded; "Write to database" adds the kept new
     ones and removes the discarded ones from the database. The state lives in AnnotationGUI.annotations,
     so closing this window doesn't lose any changes.
+
+    Selecting a row shows its feature in the main window (table, overview, scatter plot). The columns sort like the
+    results table (click a header, Ctrl+click: further key). Keys: Space toggles, Delete discards, Insert keeps,
+    Ctrl+A selects all, Ctrl+C copies, Ctrl+S writes to the database, Esc closes.
     """
 
     def __init__(self, app: "AnnotationGUI"):
@@ -35,11 +40,13 @@ class AnnotationManagerWindow(tk.Toplevel):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         # rows are identified by their position, refresh() rebuilds this mapping
         self.iid_to_key: dict[str, AnnotationKey] = {}
+        # set while refresh() restores the selection, which must not show the feature again
+        self.refreshing: bool = False
 
         ttk.Label(
             self,
-            text="Double-click a row or press Space to keep / discard it. \"Write to database\" adds the kept new "
-                 "annotations and removes the discarded ones from the database.",
+            text="Space / double-click: keep or discard, Delete: discard. \"Write to database\" (Ctrl+S) adds the "
+                 "kept new annotations and removes the discarded ones. Selecting a row shows its feature.",
             wraplength=960, padding=(10, 10, 10, 5)
         ).pack(fill="x")
 
@@ -59,17 +66,33 @@ class AnnotationManagerWindow(tk.Toplevel):
         self.tk_table = ttk.Treeview(tk_table_frame, columns=list(columns), show="headings", selectmode="extended")
         for column, (heading, width, anchor) in columns.items():
             self.tk_table.heading(column, text=heading)
-            self.tk_table.column(column, width=width, anchor=anchor, stretch=column == "name")
+            # no stretching: otherwise the other columns jump when a column is resized
+            self.tk_table.column(column, width=width, anchor=anchor, stretch=False)
+        self.sorter = TreeSorter(self.tk_table, {column: heading for column, (heading, _, _) in columns.items()})
         self.tk_table.tag_configure("to add", background="#CCFFCC")
         self.tk_table.tag_configure("to remove", background="#FFCCCC")
         self.tk_table.tag_configure("discarded", foreground="grey")
         self.tk_table.bind("<Double-1>", self.on_double_click)
+        self.tk_table.bind("<<TreeviewSelect>>", self.on_select)
         self.tk_table.bind("<space>", lambda event: self.app.toggle_annotations(self._get_selected_keys()))
+        self.tk_table.bind("<Delete>", lambda event: self.app.toggle_annotations(self._get_selected_keys(), keep=False))
+        self.tk_table.bind("<Insert>", lambda event: self.app.toggle_annotations(self._get_selected_keys(), keep=True))
+        for sequence in ("<Control-a>", "<Control-A>"):
+            self.tk_table.bind(sequence, lambda event: (self.tk_table.selection_set(self.tk_table.get_children()),
+                                                        "break")[1])
+        for sequence in ("<Control-c>", "<Control-C>"):
+            self.tk_table.bind(sequence, lambda event: self.copy_selected_rows())
+        for sequence in ("<Control-s>", "<Control-S>"):
+            self.bind(sequence, lambda event: self.app.write_annotations_to_db(parent=self))
 
         y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_table.yview)
-        self.tk_table.configure(yscrollcommand=y_scroll.set)
-        self.tk_table.pack(side="left", fill="both", expand=True)
-        y_scroll.pack(side="left", fill="y")
+        x_scroll = ttk.Scrollbar(tk_table_frame, orient="horizontal", command=self.tk_table.xview)
+        self.tk_table.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
+        self.tk_table.grid(row=0, column=0, sticky="nsew")
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
+        tk_table_frame.rowconfigure(0, weight=1)
+        tk_table_frame.columnconfigure(0, weight=1)
 
         tk_buttons = ttk.Frame(self, padding=10)
         tk_buttons.pack(fill="x")
@@ -130,8 +153,30 @@ class AnnotationManagerWindow(tk.Toplevel):
                 "" if ms2_score is None or pd.isna(ms2_score) else f"{ms2_score:.3f}",
             ))
 
+        self.sorter.apply()
+        # restoring the selection must not show the feature again (the selection event comes later)
+        self.refreshing = True
         self.tk_table.selection_set([iid for iid, key in self.iid_to_key.items() if key in selected_keys])
+        self.after_idle(lambda: setattr(self, "refreshing", False))
         self.tk_table.yview_moveto(y_view)
+
+    def on_select(self, event=None):
+        """Selected row (clicked or with the arrow keys): show its feature in the main window."""
+        if self.refreshing or not (item := self.tk_table.focus()) or item not in self.tk_table.selection():
+            return
+        f_id: int = self.iid_to_key[item][1]
+        if self.app.meas_db is not None and f_id in self.app.meas_db.mzs:
+            self.app.show_feature_ids([f_id])
+
+    def copy_selected_rows(self):
+        """Copy the selected rows (with header) as tab separated text."""
+        columns = self.tk_table["columns"]
+        lines = ["\t".join(self.tk_table.heading(column, "text").rstrip(" ▲▼0123456789") for column in columns)]
+        lines += ["\t".join(str(value) for value in self.tk_table.item(item, "values"))
+                  for item in self.tk_table.get_children() if item in self.tk_table.selection()]
+        self.clipboard_clear()
+        self.clipboard_append("\n".join(lines))
+        self.app.set_status(f"Copied {len(lines) - 1} annotation(s) to the clipboard.")
 
     @staticmethod
     def _describe_reference(kind: str, info: dict) -> str:
@@ -192,7 +237,11 @@ class ManualAnnotationDialog(tk.Toplevel):
         tk_buttons.pack(fill="x")
         ttk.Button(tk_buttons, text="Build IPL ...", command=self.on_click_build_ipl).pack(side="left")
         ttk.Button(tk_buttons, text="Cancel", command=self.destroy).pack(side="right")
-        ttk.Button(tk_buttons, text="Add", command=self.on_click_add).pack(side="right", padx=5)
+        tk_add = ttk.Button(tk_buttons, text="Add", command=self.on_click_add)
+        tk_add.pack(side="right", padx=5)
+        add_tooltip("Add the annotation to the list of changes (Enter). Esc: cancel.", tk_add)
+        self.bind("<Return>", lambda event: self.on_click_add())
+        self.bind("<KP_Enter>", lambda event: self.on_click_add())
         self._update_mz_info()
 
     def _update_mz_info(self):
@@ -305,8 +354,12 @@ class MzFromCompoundDialog(tk.Toplevel):
                                      height=10)
         for column, (heading, width, anchor) in columns.items():
             self.tk_table.heading(column, text=heading)
-            self.tk_table.column(column, width=width, anchor=anchor, stretch=column == "name")
+            self.tk_table.column(column, width=width, anchor=anchor, stretch=False)
+        self.sorter = TreeSorter(self.tk_table, {column: heading for column, (heading, _, _) in columns.items()})
         self.tk_table.bind("<<TreeviewSelect>>", self.on_select_result)
+        # double-click / Enter: apply the m/z filter of the compound
+        self.tk_table.bind("<Double-1>", lambda event: self.on_click_apply())
+        self.tk_table.bind("<Return>", lambda event: self.on_click_apply())
         y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_table.yview)
         self.tk_table.configure(yscrollcommand=y_scroll.set)
         self.tk_table.pack(side="left", fill="both", expand=True)
@@ -390,10 +443,12 @@ class MzFromCompoundDialog(tk.Toplevel):
         if error_text is not None:
             self.tk_search_info.set(f"search failed: {error_text}")
             return
-        for f_id, name, formula, adduct, mz, library_name in rows:
-            iid = self.tk_table.insert("", "end", values=(name or "", formula or "", adduct or "",
-                                                          "" if mz is None else f"{mz:.4f}", f_id, library_name))
+        for i, (f_id, name, formula, adduct, mz, library_name) in enumerate(rows):
+            # numbered ids give the order of the search to the sorting
+            iid = self.tk_table.insert("", "end", iid=str(i), values=(
+                name or "", formula or "", adduct or "", "" if mz is None else f"{mz:.4f}", f_id, library_name))
             self.search_results[iid] = (formula, adduct, mz)
+        self.sorter.apply()
         shown = f", showing the first {len(rows)}" if n_found > len(rows) else ""
         self.tk_search_info.set(f"{n_found} compound(s) found{shown}")
 
@@ -490,7 +545,11 @@ class FeatureRelationDialog(tk.Toplevel):
         tk_buttons = ttk.Frame(self, padding=(10, 0, 10, 10))
         tk_buttons.pack(fill="x")
         ttk.Button(tk_buttons, text="Cancel", command=self.destroy).pack(side="right")
-        ttk.Button(tk_buttons, text="Add", command=self.on_click_add).pack(side="right", padx=5)
+        tk_add = ttk.Button(tk_buttons, text="Add", command=self.on_click_add)
+        tk_add.pack(side="right", padx=5)
+        add_tooltip("Add the relation to the list of changes (Enter). Esc: cancel.", tk_add)
+        self.bind("<Return>", lambda event: self.on_click_add())
+        self.bind("<KP_Enter>", lambda event: self.on_click_add())
         self.on_change_kind()
 
     @property

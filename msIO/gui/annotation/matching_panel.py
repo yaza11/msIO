@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from msIO.gui.annotation.common import CollapsibleSection
+from msIO.gui.annotation.common import CollapsibleSection, add_tooltip
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -17,7 +17,10 @@ class MatchingPanel(CollapsibleSection):
     """
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, "Matching parameters")
+        super().__init__(parent, "Matching parameters", tooltip="Parameters of the library search. The precursor "
+                                                                "tolerance is the stricter of ppm and mDa; the "
+                                                                "tolerances are also used by the overview and the "
+                                                                "scatter plot. Ctrl+Enter: find matches.")
         self.app: "AnnotationGUI" = app
         self.tk_max_dmz_ppm: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=10)
         self.tk_max_dmz_mda: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=3)
@@ -25,14 +28,19 @@ class MatchingPanel(CollapsibleSection):
         self.tk_min_ms2_score: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=0)
         self.tk_require_ms2: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
 
-        def add_entry(row: int, column: int, label: str, variable: tk.Variable):
-            ttk.Label(self.body, text=label).grid(row=row, column=column, sticky="w", padx=(10, 4), pady=2)
-            ttk.Entry(self.body, textvariable=variable, width=8).grid(row=row, column=column + 1, sticky="w")
+        def add_entry(row: int, column: int, label: str, variable: tk.Variable, tooltip: str):
+            tk_label = ttk.Label(self.body, text=label)
+            tk_label.grid(row=row, column=column, sticky="w", padx=(10, 4), pady=2)
+            tk_entry = ttk.Entry(self.body, textvariable=variable, width=8)
+            tk_entry.grid(row=row, column=column + 1, sticky="w")
+            add_tooltip(tooltip, tk_label, tk_entry)
 
-        add_entry(0, 0, "Precursor m/z tol. (ppm)", self.tk_max_dmz_ppm)
-        add_entry(0, 2, "and (mDa)", self.tk_max_dmz_mda)
-        add_entry(1, 0, "MS2 fragment m/z tol. (mDa)", self.tk_max_dmz_ms2_mda)
-        add_entry(1, 2, "Min. MS2 score", self.tk_min_ms2_score)
+        precursor_help = "Precursor m/z tolerance: the stricter of the ppm and the mDa value is used."
+        add_entry(0, 0, "Precursor m/z tol. (ppm)", self.tk_max_dmz_ppm, precursor_help)
+        add_entry(0, 2, "and (mDa)", self.tk_max_dmz_mda, precursor_help)
+        add_entry(1, 0, "MS2 fragment m/z tol. (mDa)", self.tk_max_dmz_ms2_mda,
+                  "Tolerance for matching MS2 peaks (also for fragments and losses in the scatter plot).")
+        add_entry(1, 2, "Min. MS2 score", self.tk_min_ms2_score, "Matches with a lower MS2 score are not listed (0-1).")
 
         ttk.Label(self.body, text="MS2 score metric").grid(row=0, column=4, sticky="w", padx=(10, 4), pady=2)
         self.tk_metric: ttk.Combobox = ttk.Combobox(
@@ -89,6 +97,3 @@ class MatchingPanel(CollapsibleSection):
     def set_searching(self, searching: bool):
         """Disable "Find Matches" while the library is searched (or indexed)."""
         self.tk_find_button.config(state="disabled" if searching else "normal")
-
-    def is_searching(self) -> bool:
-        return str(self.tk_find_button.cget("state")) == "disabled"

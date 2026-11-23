@@ -4,7 +4,7 @@ import tkinter as tk
 from tkinter import ttk
 from typing import TYPE_CHECKING
 
-from msIO.gui.annotation.common import CollapsibleSection
+from msIO.gui.annotation.common import CollapsibleSection, add_tooltip
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -20,16 +20,23 @@ class DatabasePanel(CollapsibleSection):
     SEPARATOR: str = ";"
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, "Databases")
+        super().__init__(parent, "Databases", tooltip="The measured database (Ctrl+O) and the library databases "
+                                                      "(Ctrl+Shift+O: add) to search.")
         self.app: "AnnotationGUI" = app
         self.tk_meas_path: tk.StringVar = tk.StringVar(app.tk_root)
         self.tk_lib_paths: tk.StringVar = tk.StringVar(app.tk_root)
 
-        ttk.Label(self.body, text="Measured database").grid(row=0, column=0, sticky="w")
+        tk_meas_label = ttk.Label(self.body, text="Measured database")
+        tk_meas_label.grid(row=0, column=0, sticky="w")
+        add_tooltip("SQLite file of the measurement (e.g. from the MZmine/MetaboScape converter). Ctrl+O: open.",
+                    tk_meas_label)
         ttk.Entry(self.body, textvariable=self.tk_meas_path).grid(row=0, column=1, padx=5, pady=2, sticky="ew")
         ttk.Button(self.body, text="Browse", command=app.on_browse_meas_db).grid(row=0, column=2)
 
-        ttk.Label(self.body, text="Libraries (a; b)").grid(row=1, column=0, sticky="w")
+        tk_lib_label = ttk.Label(self.body, text="Libraries")
+        tk_lib_label.grid(row=1, column=0, sticky="w")
+        add_tooltip("Library databases, several separated by \";\" (Enter loads typed paths). Browse: replace, Add / "
+                    "Ctrl+Shift+O: add libraries.", tk_lib_label)
         tk_lib_entry = ttk.Entry(self.body, textvariable=self.tk_lib_paths)
         tk_lib_entry.grid(row=1, column=1, padx=5, pady=2, sticky="ew")
         tk_lib_entry.bind("<Return>", lambda event: app.load_libraries(self.get_lib_paths()))

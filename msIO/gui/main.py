@@ -21,6 +21,7 @@ if sys.stderr is None:
 import tkinter as tk
 from tkinter import ttk
 
+from msIO import __version__
 from msIO.gui.annotation import AnnotationGUI
 from msIO.gui.csv_to_sqlite_gui import ConverterApp
 from msIO.gui.library_search_by_name import LibraryNameSearch
@@ -32,7 +33,7 @@ PATH_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "about")
 class MainWindow:
     def __init__(self, root: tk.Tk):
         self.root = root
-        root.title("msIO")
+        root.title(f"msIO {__version__}")
         # 80 % of the screen, the annotation plots need the space
         width: int = int(root.winfo_screenwidth() * 0.8)
         height: int = int(root.winfo_screenheight() * 0.8)

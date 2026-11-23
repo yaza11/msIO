@@ -41,9 +41,10 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from msIO import __version__
 from msIO.feature_managers.db import FeatureManagerDB, Library
 from msIO.gui.annotation.annotations import AnnotationStore
-from msIO.gui.annotation.common import SQLITE_FILE_TYPES, AnnotationKey
+from msIO.gui.annotation.common import ANNOTATION_KIND_LABELS, SQLITE_FILE_TYPES, AnnotationKey, DividedArea
 from msIO.gui.annotation.database_panel import DatabasePanel
 from msIO.gui.annotation.dialogs import (
     AnnotationManagerWindow, FeatureRelationDialog, ManualAnnotationDialog, MzFromCompoundDialog
@@ -51,8 +52,8 @@ from msIO.gui.annotation.dialogs import (
 from msIO.gui.annotation.export import EXPORTED_KINDS, write_annotations_as_library
 from msIO.gui.annotation.filter_panel import FilterError, FilterPanel
 from msIO.gui.annotation.matching import (
-    MzTarget, build_feature_table, combine_with_dummies, dummy_table, empty_matches_table, limit_matches_per_feature,
-    match_targets, matches_to_table
+    MzTarget, annotation_table, build_feature_table, combine_rows, dummy_table, empty_matches_table,
+    limit_matches_per_feature, match_targets, matches_to_table
 )
 from msIO.gui.annotation.matching_panel import MatchingPanel
 from msIO.gui.annotation.overview_panel import OverviewPanel
@@ -85,7 +86,7 @@ class AnnotationGUI:
         tab of msIO.gui.main, which then has to call can_close before closing its window)."""
         self.tk_root: tk.Misc = root
         if isinstance(root, (tk.Tk, tk.Toplevel)):
-            self.tk_root.title("Annotation GUI")
+            self.tk_root.title(f"Annotation GUI (msIO {__version__})")
             # 80 % of the screen, the plots need the space
             width: int = int(self.tk_root.winfo_screenwidth() * 0.8)
             height: int = int(self.tk_root.winfo_screenheight() * 0.8)
@@ -111,7 +112,10 @@ class AnnotationGUI:
         self.matches: dict[int, list[dict]] = {}
         self.matches_table: pd.DataFrame = empty_matches_table(list(ResultsPanel.COLUMNS))
         # matches with a dummy row per feature, built when needed: ((matches table, feature table), table)
-        self._table_with_dummies: tuple[tuple, pd.DataFrame] = None
+        # matches with dummy / annotation rows, built when needed: ((sources), table), see get_unfiltered_table
+        self._combined_table: tuple[tuple, pd.DataFrame] = None
+        # incremented on every change of the annotations, the annotation rows are rebuilt then
+        self.annotations_version: int = 0
         # compounds of the m/z filter (e.g. an IPL batch) and the text they put into the m/z filter field, they are
         # dropped when the field is changed
         self.mz_targets: list[MzTarget] = []
@@ -128,7 +132,7 @@ class AnnotationGUI:
         self.last_clicked_f_id: int = None  # in the scatter plot
 
         # position of the divider between overview and scatter plot while both are expanded
-        self.plot_sash_position: int = None
+        self.plot_divider_position: int = None
         self.plot_sections_expanded: tuple[bool, bool] = (True, True)  # (overview, scatter plot)
 
         self._create_gui()
@@ -140,7 +144,6 @@ class AnnotationGUI:
         # status bar is packed before the main area, so it keeps its space when the window shrinks
         tk_status_bar = ttk.Frame(self.tk_root, relief="sunken")
         tk_status_bar.pack(side="bottom", fill="x")
-        ttk.Button(tk_status_bar, text="Shortcuts (F1)", command=lambda: show_shortcuts(self)).pack(side="right")
         self.tk_status_field = ttk.Label(
             tk_status_bar, text="Please load both databases to begin (F1: shortcuts).", anchor="w", padding=(5, 2)
         )
@@ -148,12 +151,12 @@ class AnnotationGUI:
         # only shown while the library is searched or indexed, see show_progress
         self.tk_progress = ttk.Progressbar(tk_status_bar, mode="determinate", maximum=100, length=250)
 
-        self.tk_main_area = ttk.PanedWindow(self.tk_root, orient="horizontal")
+        self.tk_main_area = DividedArea(self.tk_root, orient="horizontal")
         self.tk_main_area.pack(fill="both", expand=True, padx=10, pady=(10, 5))
 
         # the results take the space left by the other sections (also when those are collapsed)
         tk_results_pane = ttk.Frame(self.tk_main_area)
-        self.tk_main_area.add(tk_results_pane, weight=1)
+        self.tk_main_area.add_pane(tk_results_pane)
         self.database = DatabasePanel(tk_results_pane, self)
         self.matching = MatchingPanel(tk_results_pane, self)
         self.filters = FilterPanel(tk_results_pane, self)
@@ -162,24 +165,29 @@ class AnnotationGUI:
             section.pack(fill="x", pady=(0, 4))
         self.results.pack(fill="both", expand=True)
 
-        self.tk_plot_area = ttk.PanedWindow(self.tk_main_area, orient="vertical")
-        self.tk_main_area.add(self.tk_plot_area, weight=1)
+        self.tk_plot_area = DividedArea(self.tk_main_area, orient="vertical")
+        self.tk_main_area.add_pane(self.tk_plot_area)
         self.overview = OverviewPanel(self.tk_plot_area, self)
         self.scatter = ScatterPanel(self.tk_plot_area, self)
-        self.tk_plot_area.add(self.overview, weight=3)
-        self.tk_plot_area.add(self.scatter, weight=2)
+        self.tk_plot_area.add_pane(self.overview)
+        self.tk_plot_area.add_pane(self.scatter)
 
         # the panes would otherwise be sized by the requested size of their content, so place the dividers once the
-        # window is shown: results | plots at half the width, overview | scatter plot at OVERVIEW_HEIGHT_FRACTION
-        def set_initial_dividers(event):
-            if event.width <= 1:
+        # areas are shown (until then they have no size, e.g. in a hidden tab of the main window): results | plots at
+        # half the width, overview | scatter plot at OVERVIEW_HEIGHT_FRACTION
+        def set_initial_dividers():
+            width, height = self.tk_main_area.winfo_width(), self.tk_plot_area.winfo_height()
+            if width <= 1 or height <= 1:
+                self.tk_root.after(100, set_initial_dividers)
                 return
-            self.tk_main_area.unbind("<Configure>")
-            self.tk_main_area.sashpos(0, event.width // 2)
-            self.tk_plot_area.sashpos(0, int(event.height * self.OVERVIEW_HEIGHT_FRACTION))
+            self.tk_main_area.set_divider_position(width // 2)
+            self.tk_plot_area.set_divider_position(int(height * self.OVERVIEW_HEIGHT_FRACTION))
 
-        self.tk_main_area.bind("<Configure>", set_initial_dividers)
+        self.tk_root.after(100, set_initial_dividers)
         bind_shortcuts(self)
+        # help with the shortcuts in the top right corner, above the panes
+        tk_help_button = ttk.Button(self.tk_root, text="?", width=3, command=lambda: show_shortcuts(self))
+        tk_help_button.place(relx=1.0, x=-2, y=0, anchor="ne")
 
     def on_toggle_plot_section(self):
         """
@@ -189,21 +197,21 @@ class AnnotationGUI:
         overview_expanded, scatter_expanded = self.overview.expanded, self.scatter.expanded
         # the divider hasn't moved yet: if both were expanded before this toggle, remember where it was
         if self.plot_sections_expanded == (True, True):
-            self.plot_sash_position = self.tk_plot_area.sashpos(0)
+            self.plot_divider_position = self.tk_plot_area.divider_position()
         self.plot_sections_expanded = (overview_expanded, scatter_expanded)
 
         # a collapsed section must not grow when the window is resized
-        self.tk_plot_area.pane(self.overview, weight=3 if overview_expanded else 0)
-        self.tk_plot_area.pane(self.scatter, weight=2 if scatter_expanded else 0)
+        self.tk_plot_area.set_grows(self.overview, overview_expanded)
+        self.tk_plot_area.set_grows(self.scatter, scatter_expanded)
         self.tk_root.update_idletasks()
         height: int = self.tk_plot_area.winfo_height()
         if overview_expanded and scatter_expanded:
-            position = self.plot_sash_position or int(height * self.OVERVIEW_HEIGHT_FRACTION)
+            position = self.plot_divider_position or int(height * self.OVERVIEW_HEIGHT_FRACTION)
         elif not overview_expanded:
             position = self.overview.header_height()
         else:
             position = height - self.scatter.header_height()
-        self.tk_plot_area.sashpos(0, position)
+        self.tk_plot_area.set_divider_position(position)
 
     # ------------------------------------------------------------------------------------------------------------------
     # Status bar and threads
@@ -515,14 +523,29 @@ class AnnotationGUI:
     # Filters
     # ------------------------------------------------------------------------------------------------------------------
     def get_unfiltered_table(self) -> pd.DataFrame:
-        """All rows of the results table: the matches and, if selected, a dummy row per measured feature."""
-        if not self.filters.tk_add_dummies.get() or self.feature_table is None:
+        """
+        All rows of the results table: the matches and, if selected, a dummy row per measured feature and a row per
+        annotation of the measured database (stored or to add).
+        """
+        add_dummies: bool = self.filters.tk_add_dummies.get() and self.feature_table is not None
+        add_annotations: bool = self.filters.tk_add_annotations.get() and self.feature_table is not None
+        if not (add_dummies or add_annotations):
             return self.matches_table
-        sources: tuple = (self.matches_table, self.feature_table)
-        if self._table_with_dummies is None or any(a is not b for a, b in zip(self._table_with_dummies[0], sources)):
-            dummies = dummy_table(self.feature_table, list(ResultsPanel.COLUMNS))
-            self._table_with_dummies = (sources, combine_with_dummies(self.matches_table, dummies))
-        return self._table_with_dummies[1]
+        sources: tuple = (self.matches_table, self.feature_table, add_dummies,
+                          self.annotations_version if add_annotations else None)
+        # the tables are compared by identity (a new search / database gives new ones), the flags by value
+        if self._combined_table is None or any(
+                (cached is not current) if isinstance(current, pd.DataFrame) else cached != current
+                for cached, current in zip(self._combined_table[0], sources)):
+            columns: list[str] = list(ResultsPanel.COLUMNS)
+            extra: list[pd.DataFrame] = []
+            if add_dummies:
+                extra.append(dummy_table(self.feature_table, columns))
+            if add_annotations:
+                extra.append(annotation_table(self.feature_table, self.annotations.kept(), columns,
+                                              ANNOTATION_KIND_LABELS))
+            self._combined_table = (sources, combine_rows(self.matches_table, *extra))
+        return self._combined_table[1]
 
     def apply_filters(self, show_empty_message: bool = True, show_dialogs: bool = True):
         """
@@ -654,8 +677,9 @@ class AnnotationGUI:
 
     def on_click_add_library_match(self):
         """Add the selected library match to the local list of annotations."""
-        if (match := self.results.selected_match()) is None or match.is_dummy:
-            messagebox.showerror("Error", "Please select a row with a library match first.")
+        if (match := self.results.selected_match()) is None or match.is_dummy or match.is_annotation:
+            messagebox.showerror("Error", "Please select a row with a library match first (not a dummy or "
+                                          "annotation row).")
             return
         f_id_meas, f_id_lib, library_name = int(match.feature_id_meas), int(match.feature_id_lib), match.library
         match_result: dict = self.get_match_result(f_id_meas, library_name, f_id_lib)
@@ -727,7 +751,9 @@ class AnnotationGUI:
 
     def _on_annotations_changed(self):
         """Update everything that shows annotation states: table column, button text, manager window, scatter plot."""
-        if self.filters.tk_hide_related.get():  # the hidden features changed
+        self.annotations_version += 1
+        # the hidden features or the annotation rows changed
+        if self.filters.tk_hide_related.get() or self.filters.tk_add_annotations.get():
             self.apply_filters(show_empty_message=False, show_dialogs=False)
         self.results.refresh_annotation_column()
         self.results.set_unsaved_annotation_count(sum(len(keys) for keys in self.annotations.unsaved_changes()))
@@ -822,8 +848,11 @@ class AnnotationGUI:
 
     @staticmethod
     def _overview_key_of_row(match: pd.Series) -> tuple:
-        """Overview of a row of the results table (see OverviewPanel.shown_key): the match, the feature for dummies."""
-        if match.is_dummy:
+        """
+        Overview of a row of the results table (see OverviewPanel.shown_key): the match, the feature for dummy and
+        annotation rows.
+        """
+        if match.is_dummy or match.is_annotation:
             return "feature", (int(match.feature_id_meas),), None
         return "match", (int(match.feature_id_meas),), (match.library, int(match.feature_id_lib))
 

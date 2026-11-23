@@ -1,8 +1,10 @@
 """
 Turn the matches found in the libraries into the results table of the GUI (no GUI code, runs in worker threads).
 
-The results table has one row per match (measured feature, library, library feature) and optionally one dummy row per
-measured feature, which only holds the properties of the feature (see dummy_table).
+The results table has one row per match (measured feature, library, library feature), optionally one dummy row per
+measured feature, which only holds the properties of the feature (see dummy_table), and one row per annotation of the
+measured database (see annotation_table). The default order (set_default_order) shows the features with the best MS2
+scores first.
 """
 
 from dataclasses import dataclass
@@ -15,11 +17,13 @@ from msIO import PeakList
 from msIO.feature_managers.db import FeatureManagerDB, Library, lib_match_result_to_table
 
 # columns of the results table besides the shown ones (see ResultsPanel.COLUMNS)
-EXTRA_COLUMNS: list[str] = ['feature_id_lib', 'formula_display', 'default_order', 'is_dummy']
+EXTRA_COLUMNS: list[str] = ['feature_id_lib', 'formula_display', 'default_order', 'is_dummy', 'is_annotation',
+                             'annotation_key']
 # properties of the measured features, taken from the feature table (see build_feature_table)
 FEATURE_COLUMNS: list[str] = ['feature_id_meas', 'mz_meas', 'RT', 'ccs_meas', 'intensity', 'i1_i0']
-# library feature id of the dummy rows
+# library feature id of the dummy rows, annotation rows count down from ANNOTATION_LIB_ID
 DUMMY_LIB_ID: int = -1
+ANNOTATION_LIB_ID: int = -2
 # columns of the matches that hold text (empty in dummy rows, the other match columns are missing values)
 TEXT_COLUMNS: set[str] = {'name', 'formula', 'formula_display', 'adduct', 'source_library', 'library'}
 
@@ -83,34 +87,97 @@ def dummy_table(feature_table: pd.DataFrame, shown_columns: list[str]) -> pd.Dat
             table[column] = '' if column in TEXT_COLUMNS else np.nan
     table['feature_id_lib'] = DUMMY_LIB_ID
     table['is_dummy'] = True
+    table['is_annotation'] = False
+    table['annotation_key'] = None
     table['default_order'] = np.arange(len(table))
     return table
 
 
-def combine_with_dummies(matches_table: pd.DataFrame, dummies: pd.DataFrame) -> pd.DataFrame:
-    """Matches and dummy rows, the dummy row of a feature comes before its matches in the default order."""
-    if matches_table.empty:
-        return dummies.copy()
-    table = pd.concat([matches_table, dummies], ignore_index=True)
+def annotation_table(feature_table: pd.DataFrame, annotations: dict, shown_columns: list[str],
+                     kind_labels: dict[str, str]) -> pd.DataFrame:
+    """
+    One row per annotation of a measured feature (in the measured database or to add, see AnnotationStore.kept):
+    the feature properties and name, formula, adduct and MS2 score of the annotation. "Source" names the kind of the
+    annotation, "Library" the library of a library match. The key of the annotation is in annotation_key.
+    """
+    rows: list[dict] = []
+    for i, ((kind, f_id_meas, reference), info) in enumerate(sorted(annotations.items(), key=lambda item: item[0])):
+        rows.append(dict(
+            feature_id_meas=int(f_id_meas),
+            name=info.get('name') or '',
+            formula=info.get('formula') or '',
+            formula_display=info.get('formula') or '',
+            adduct=info.get('adduct') or '',
+            ms2_score=info.get('ms2_score'),
+            library=info.get('library_name') or '',
+            source_library=f"annotation: {kind_labels.get(kind, kind)}",
+            feature_id_lib=ANNOTATION_LIB_ID - i,
+            annotation_key=(kind, f_id_meas, reference),
+        ))
+    columns = empty_matches_table(shown_columns).columns
+    if not rows:
+        return pd.DataFrame(columns=columns)
+    table = pd.DataFrame(rows).merge(feature_table, on='feature_id_meas', how='inner')
+    table['ms2_score'] = pd.to_numeric(table['ms2_score'], errors='coerce').round(3)
+    for column in columns:
+        if column not in table.columns:
+            table[column] = '' if column in TEXT_COLUMNS else np.nan
+    table['is_dummy'] = False
+    table['is_annotation'] = True
+    table['default_order'] = np.arange(len(table))
+    return table
+
+
+def set_default_order(table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Default order of the rows: features by their best MS2 score (highest first, features without scored match after
+    them by feature id), within a feature the dummy row, the annotation rows and the matches by MS2 score (highest
+    first, then in the order of the search). Returns the table in that order with default_order set.
+    """
+    if table.empty:
+        return table
+    is_dummy = table['is_dummy'].astype(bool).to_numpy()
+    is_annotation = table['is_annotation'].fillna(False).astype(bool).to_numpy()
+    score = pd.to_numeric(table['ms2_score'], errors='coerce').where(~(is_dummy | is_annotation))
+    keys = pd.DataFrame({
+        'best': score.groupby(table['feature_id_meas']).transform('max').fillna(-np.inf).to_numpy(),
+        'feature': table['feature_id_meas'].to_numpy(),
+        'dummy': is_dummy,
+        'annotation': is_annotation,
+        'score': score.fillna(-np.inf).to_numpy(),
+        'previous': pd.to_numeric(table['default_order'], errors='coerce').to_numpy(),
+    }, index=table.index)
+    order = keys.sort_values(['best', 'feature', 'dummy', 'annotation', 'score', 'previous'],
+                             ascending=[False, True, False, False, False, True], kind='mergesort').index
+    table = table.loc[order].reset_index(drop=True)
+    table['default_order'] = np.arange(len(table))
+    return table
+
+
+def combine_rows(matches_table: pd.DataFrame, *other_tables: pd.DataFrame) -> pd.DataFrame:
+    """Matches with dummy and / or annotation rows, in the default order (see set_default_order)."""
+    tables = [table for table in (matches_table, *other_tables) if not table.empty]
+    if not tables:
+        return matches_table
+    table = pd.concat(tables, ignore_index=True) if len(tables) > 1 else tables[0].copy()
     table['is_dummy'] = table['is_dummy'].astype(bool)
+    table['is_annotation'] = table['is_annotation'].fillna(False).astype(bool)
     # stays a whole number with the missing values of the dummy rows (shown as 43, not 43.0)
     table['n_hits_ms2'] = pd.to_numeric(table['n_hits_ms2'], errors='coerce').astype('Int64')
-    table = table.sort_values(['feature_id_meas', 'is_dummy', 'default_order'], ascending=[True, False, True],
-                              kind='mergesort')
-    table['default_order'] = np.arange(len(table))
-    return table.reset_index(drop=True)
+    return set_default_order(table)
 
 
 def limit_matches_per_feature(table: pd.DataFrame, max_matches: int) -> pd.DataFrame:
     """
-    Keep at most max_matches rows per measured feature: the dummy row first, then the matches with the highest MS2
-    score (matches without score last, ties in the default order).
+    Keep at most max_matches rows per measured feature: the dummy row first, the annotation rows, then the matches
+    with the highest MS2 score (matches without score last, ties in the default order).
     """
     if table.empty:
         return table
-    ranked = table.assign(_score=pd.to_numeric(table['ms2_score'], errors='coerce').fillna(-np.inf))
-    ranked = ranked.sort_values(['feature_id_meas', 'is_dummy', '_score', 'default_order'],
-                                ascending=[True, False, False, True], kind='mergesort')
+    ranked = table.assign(_score=pd.to_numeric(table['ms2_score'], errors='coerce').fillna(-np.inf),
+                          _annotation=table['is_annotation'].fillna(False).astype(bool))
+    ranked = ranked.sort_values(['feature_id_meas', 'is_dummy', '_annotation', '_score', 'default_order'],
+                                ascending=[True, False, False, False, True], kind='mergesort')
     keep = ranked.groupby('feature_id_meas', sort=False).cumcount() < max_matches
     return table.loc[ranked.index[keep.to_numpy()]].sort_values('default_order', kind='mergesort')
 
@@ -181,9 +248,12 @@ def matches_to_table(
                               max_dmz_da)
     table['formula_display'] = np.where(has_formula, np.where(fits_mz, table.formula, '(' + table.formula + ')'), '')
     table['is_dummy'] = False
-    # order of the search result, restored when the sorting is removed (see ResultsPanel)
+    table['is_annotation'] = False
+    table['annotation_key'] = None
+    # order of the search result, then the features with the best MS2 scores first (restored when the sorting of the
+    # results table is removed)
     table['default_order'] = np.arange(len(table))
-    return table
+    return set_default_order(table)
 
 
 @dataclass(frozen=True)

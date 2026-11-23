@@ -11,7 +11,9 @@ from matplotlib.collections import LineCollection
 from matplotlib.figure import Figure
 
 from msIO.gui.annotation.common import (
-    ADDUCTS, COMPARISON_COLORS, CollapsibleSection, find_feature_pairs, pack_canvas, parse_mass_differences, parse_masses
+    ADDUCTS, COMPARISON_COLORS, CollapsibleSection, add_tooltip, canvas_has_focus, checkbutton_with_tooltip,
+    create_canvas, find_feature_pairs, focused_widget, label_with_tooltip, pack_canvas, parse_mass_differences,
+    parse_masses
 )
 from msIO.gui.annotation.series import (
     MeshOfSeries, ParallelSeries, SeriesFit, features_near, find_candidates, find_parallel, fit_series,
@@ -22,19 +24,18 @@ if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
 
 # matplotlib key names of + and - (main keyboard and numpad) for zooming
-ZOOM_IN_KEYS: set[str] = {"+", "plus", "add", "kp_add"}
+# "=": + without shift on US keyboards
+ZOOM_IN_KEYS: set[str] = {"+", "plus", "add", "kp_add", "="}
 ZOOM_OUT_KEYS: set[str] = {"-", "minus", "subtract", "kp_subtract"}
 # keys while the mouse is over the plot: (matplotlib key names, shown keys, description, method of ScatterPanel)
-# the help window (shortcuts.py) lists them, on_key dispatches them
+# the help window (shortcuts.py) lists them, on_key dispatches them. Z, V and M work everywhere (except while typing),
+# they are bound to the window in shortcuts.py
 PLOT_KEYS: list[tuple[set[str], str, str, str]] = [
-    (ZOOM_IN_KEYS, "+", "Zoom in at the mouse position", "zoom_in"),
+    (ZOOM_IN_KEYS, "+ (or =)", "Zoom in at the mouse position", "zoom_in"),
     (ZOOM_OUT_KEYS, "-", "Zoom out at the mouse position", "zoom_out"),
     ({"left", "right", "up", "down"}, "Arrow keys", "Pan", "pan"),
     ({"0", "home", "kp_0", "kp_home"}, "0 / Home", "Show all features", "show_all"),
     ({"backspace"}, "Backspace", "Previous view", "previous_view"),
-    ({"z"}, "Z", "Zoom to the features in the table", "zoom_to_table"),
-    ({"v"}, "V", "Table: only features in the visible region (on / off)", "toggle_only_visible"),
-    ({"m"}, "M", "Table: only features marked in the plot (on / off)", "toggle_only_marked"),
 ]
 # colors of the lines connecting features with marked mass differences (one per entry)
 MASS_DIFFERENCE_COLORS: list[str] = ["C3", "C4", "C5", "C6", "C8", "C9"]
@@ -88,11 +89,18 @@ class ScatterPanel(CollapsibleSection):
     ZOOM_FACTOR: float = 1.5
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, "Scatter plot m/z vs RT (click: select in table, shift-click two features: compare)",
-                         on_toggle=lambda expanded: app.on_toggle_plot_section())
+        super().__init__(parent, "Scatter plot m/z vs RT", on_toggle=lambda expanded: app.on_toggle_plot_section(),
+                         tooltip=(
+                             "All measured features. Click: select the feature (its best match in the table), "
+                             "Shift+click two features: compare them, Ctrl+click: series.\n"
+                             "Keys with the mouse over the plot: + / - zoom, arrow keys pan, 0 shows all, Backspace "
+                             "returns to the previous view. Z zooms to the table, V / M restrict the table to the "
+                             "visible region / the marked features (F1: all keys)."))
         self.app: "AnnotationGUI" = app
         self.tk_show_annotations: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=True)
         self.tk_circle_matches: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=True)
+        # features that are not in the (filtered) table are faded, so the plot shows the filters
+        self.tk_fade_others: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=True)
         # MS2 peaks below this intensity are ignored when searching fragments and losses
         self.tk_min_peak_intensity: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=100)
         self.tk_rt_window: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=0.2)
@@ -112,6 +120,7 @@ class ScatterPanel(CollapsibleSection):
         # drawn markers by group, each group is replaced as a whole (see _replace_artists):
         #   annotated           green / yellow points of annotated features
         #   filtered            black circles around features with matches in the filtered table
+        #   faded               white veil over the features that are not in the filtered table
         #   selected            red circle around the selected feature
         #   compared            squares around the compared features
         #   mass_differences    lines and their end caps
@@ -130,31 +139,43 @@ class ScatterPanel(CollapsibleSection):
 
         tk_controls = ttk.Frame(self.body)
         tk_controls.pack(fill="x")
-        ttk.Checkbutton(tk_controls, text="Show annotations", variable=self.tk_show_annotations,
-                        command=self.redraw).grid(row=0, column=0, sticky="w")
-        ttk.Checkbutton(tk_controls, text="Circle matches", variable=self.tk_circle_matches,
-                        command=self.mark_filtered_features).grid(row=0, column=1, sticky="w", padx=(4, 10))
-        ttk.Label(tk_controls, text="Min. peak intensity").grid(row=0, column=2, sticky="w")
-        ttk.Entry(tk_controls, textvariable=self.tk_min_peak_intensity, width=10).grid(row=0, column=3, sticky="w",
-                                                                                        padx=(4, 10))
-        ttk.Label(tk_controls, foreground="gray", text="(fragments and losses; keys over the plot: see F1)").grid(
-            row=0, column=4, columnspan=4, sticky="w")
+        # the filters of the table shown in the plot
+        tk_table_options = ttk.Frame(tk_controls)
+        tk_table_options.grid(row=0, column=0, columnspan=8, sticky="w")
+        checkbutton_with_tooltip(tk_table_options, "Show annotations", self.tk_show_annotations, self.redraw,
+                    "Names of the annotated features (in the measured database) next to them.").pack(side="left")
+        checkbutton_with_tooltip(tk_table_options, "Circle table features", self.tk_circle_matches, self.mark_filtered_features,
+                    "Black circles around the features of the filtered table (while the filters remove rows)."
+                    ).pack(side="left", padx=(8, 0))
+        checkbutton_with_tooltip(tk_table_options, "Fade features not in the table", self.tk_fade_others,
+                    self.mark_filtered_features,
+                    "Fade the features that the filters remove from the table, so the plot shows the filtered "
+                    "features.").pack(side="left", padx=(8, 0))
+        tk_zoom_button = ttk.Button(tk_table_options, text="Zoom to table (Z)", command=self.zoom_to_table)
+        tk_zoom_button.pack(side="left", padx=(8, 0))
+        add_tooltip("Fit the view to the features of the filtered table.", tk_zoom_button)
 
         # highlight features with MS2 fragments / neutral losses, entries are m/z values or formulas
-        ttk.Label(tk_controls, text="Fragments (a; b)").grid(row=1, column=0, sticky="w", pady=2)
+        fragments_help = ("Features with these MS2 fragments (m/z or ion formulas, e.g. C5H15NO4P+; several separated "
+                          "by \";\"). The list offers the annotated MS2 peaks of the measurement and common fragments; "
+                          "selecting one appends it. Enter: highlight.")
+        losses_help = ("Features with these neutral losses from the precursor (masses or formulas, e.g. H2O; several "
+                       "separated by \";\"). The list offers common losses; selecting one appends it. Enter: highlight.")
+        label_with_tooltip(tk_controls, "Fragments", fragments_help).grid(row=1, column=0, sticky="w", pady=2)
         # can be typed in, the list holds the annotated peaks of the measured database (selecting one appends it)
         self.tk_fragments_entry = ttk.Combobox(tk_controls, width=22, height=20)
         self.tk_fragments_entry.grid(row=1, column=1, sticky="w", padx=(4, 10))
-        ttk.Label(tk_controls, text="Losses (a; b)").grid(row=1, column=2, sticky="w")
+        label_with_tooltip(tk_controls, "Losses", losses_help).grid(row=1, column=2, sticky="w")
         # can be typed in, the list holds the common losses of LipidCalculator (selecting one appends it)
         self.tk_losses_entry = ttk.Combobox(tk_controls, width=22, height=20, values=list(self.loss_choices))
         self.tk_losses_entry.grid(row=1, column=3, sticky="w", padx=(4, 10))
         for tk_combobox, choices in ((self.tk_fragments_entry, lambda: self.fragment_choices),
                                      (self.tk_losses_entry, lambda: self.loss_choices)):
-            tk_combobox.config(postcommand=lambda c=tk_combobox: self._remember_text(c))
-            tk_combobox.bind("<<ComboboxSelected>>", lambda event, c=tk_combobox, get=choices: self.on_select_choice(
-                c, get()))
-        ttk.Label(tk_controls, text="Match").grid(row=1, column=4, sticky="w")
+            tk_combobox.config(postcommand=lambda combobox=tk_combobox: self._remember_text(combobox))
+            tk_combobox.bind("<<ComboboxSelected>>", lambda event, combobox=tk_combobox, get_choices=choices:
+                             self.on_select_choice(combobox, get_choices()))
+        label_with_tooltip(tk_controls, "Match", "all: features with every fragment and loss, any: with one of them."
+              ).grid(row=1, column=4, sticky="w")
         self.tk_highlight_mode: ttk.Combobox = ttk.Combobox(tk_controls, state="readonly", values=["all", "any"],
                                                             width=4)
         self.tk_highlight_mode.set("all")
@@ -163,22 +184,36 @@ class ScatterPanel(CollapsibleSection):
         ttk.Button(tk_controls, text="Remove highlight", command=self.remove_highlight).grid(row=1, column=7)
         for tk_entry in (self.tk_fragments_entry, self.tk_losses_entry):
             tk_entry.bind("<Return>", lambda event: self.on_click_highlight())
+        add_tooltip(fragments_help, self.tk_fragments_entry)
+        add_tooltip(losses_help, self.tk_losses_entry)
+        tk_intensity_label = label_with_tooltip(tk_controls, "Min. peak intensity",
+                                   "MS2 peaks below this intensity are ignored for fragments and losses.")
+        tk_intensity_label.grid(row=1, column=8, sticky="w", padx=(10, 0))
+        tk_intensity_entry = ttk.Entry(tk_controls, textvariable=self.tk_min_peak_intensity, width=8)
+        tk_intensity_entry.grid(row=1, column=9, sticky="w", padx=(4, 0))
+        add_tooltip("MS2 peaks below this intensity are ignored for fragments and losses.", tk_intensity_entry)
 
         # connect pairs of features with mass differences or adduct exchanges, matched with the precursor tolerance
-        ttk.Label(tk_controls, text="Mass differences").grid(row=2, column=0, sticky="w", pady=2)
+        mass_differences_help = ("Connect pairs of features whose m/z differ by these masses (precursor tolerance) and "
+                                 "that elute within the RT window, several separated by \";\", e.g. NH3; "
+                                 "C[13] - C[12]; [M+H]+>[M+NH4]+ (adduct exchange). Enter: mark.")
+        label_with_tooltip(tk_controls, "Mass differences", mass_differences_help).grid(row=2, column=0, sticky="w", pady=2)
         self.tk_mass_differences_entry = ttk.Entry(tk_controls)
+        add_tooltip(mass_differences_help, self.tk_mass_differences_entry)
         self.tk_mass_differences_entry.grid(row=2, column=1, columnspan=3, sticky="ew", padx=(4, 10))
         self.tk_mass_differences_entry.bind("<Return>", lambda event: self.on_click_mark_mass_differences())
-        ttk.Label(tk_controls, text="RT window (min)").grid(row=2, column=4, sticky="w")
+        label_with_tooltip(tk_controls, "RT window (min)", "Largest RT difference of mass difference pairs and of features at "
+                                              "predicted members of series.").grid(row=2, column=4, sticky="w")
         ttk.Entry(tk_controls, textvariable=self.tk_rt_window, width=5).grid(row=2, column=5, sticky="w", padx=(4, 10))
         ttk.Button(tk_controls, text="Mark", command=self.on_click_mark_mass_differences).grid(row=2, column=6, padx=3)
         ttk.Button(tk_controls, text="Remove marks", command=self.remove_mass_differences).grid(row=2, column=7)
-        ttk.Label(tk_controls, foreground="gray",
-                  text="e.g. NH3; C[13] - C[12]; [M+H]+>[M+NH4]+ (adduct exchange); fragments are ions, "
-                       "e.g. C5H15NO4P+").grid(row=3, column=0, columnspan=8, sticky="w")
 
         # series of features: Ctrl+click in the plot
-        ttk.Label(tk_controls, text="Series").grid(row=4, column=0, sticky="w", pady=2)
+        label_with_tooltip(tk_controls, "Series", "Ctrl+click features in the plot (or rows of the table) to collect a series, a "
+                                     "line is fitted through them and extrapolated. While Ctrl stays pressed, the "
+                                     "clicks belong to the same series (clicking a feature again removes it). The last "
+                                     "two crossing series span a mesh of possible members.").grid(
+            row=4, column=0, sticky="w", pady=2)
         tk_series = ttk.Frame(tk_controls)
         tk_series.grid(row=4, column=1, columnspan=7, sticky="w", padx=(4, 0))
         ttk.Label(tk_series, text="extrapolate").pack(side="left")
@@ -187,16 +222,17 @@ class ScatterPanel(CollapsibleSection):
         ttk.Label(tk_series, text="members").pack(side="left", padx=(0, 10))
         ttk.Button(tk_series, text="Remove last series", command=self.remove_last_series).pack(side="left")
         ttk.Button(tk_series, text="Remove all series", command=self.remove_all_series).pack(side="left", padx=3)
-        ttk.Checkbutton(tk_series, text="Mesh of the last two", variable=self.tk_show_mesh,
-                        command=self.update_series).pack(side="left", padx=(6, 0))
-        ttk.Label(tk_series, foreground="gray",
-                  text="Ctrl+click features (new series after releasing Ctrl, Ctrl+click again: remove)").pack(
-            side="left", padx=(8, 0))
+        checkbutton_with_tooltip(tk_series, "Mesh of the last two", self.tk_show_mesh, self.update_series,
+                    "Lines parallel to the last two crossing series, their crossings are possible members of both "
+                    "(e.g. chain length and double bonds).").pack(side="left", padx=(6, 0))
         # the next Ctrl+click starts a new series once Ctrl is released (wherever the focus is)
         for key in ("<KeyRelease-Control_L>", "<KeyRelease-Control_R>"):
             app.tk_root.bind_all(key, lambda event: setattr(self, "series_open", False), add="+")
 
-        self.tk_plot_frame = ttk.Frame(self.body)
+        # small requested size: the plot fills the space it gets, its own request is ignored (matplotlib sets it to
+        # the figure size on high-DPI screens, the section would scroll instead)
+        self.tk_plot_frame = ttk.Frame(self.body, width=200, height=150)
+        self.tk_plot_frame.pack_propagate(False)
         self.tk_plot_frame.pack(fill="both", expand=True)
         self.update_fragment_choices()
 
@@ -227,6 +263,7 @@ class ScatterPanel(CollapsibleSection):
         view = None
         if keep_view and self.ax is not None:
             view = self.ax.get_xlim(), self.ax.get_ylim()
+        had_focus: bool = canvas_has_focus(self.canvas)
         self._destroy_plot()
 
         fig = Figure(figsize=(7, 6))
@@ -242,7 +279,7 @@ class ScatterPanel(CollapsibleSection):
         self.ax.set_ylabel("m/z")
         fig.tight_layout()
 
-        self.canvas = FigureCanvasTkAgg(fig, master=self.tk_plot_frame)
+        self.canvas = create_canvas(fig, self.tk_plot_frame, focus_canvas=had_focus)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.tk_plot_frame)
         self.toolbar.update()
         self.toolbar.pack()
@@ -284,7 +321,7 @@ class ScatterPanel(CollapsibleSection):
             legend.remove()
         self.canvas.draw_idle()
 
-    def _points(self, f_ids) -> list[tuple[float, float]]:
+    def _rt_mz_points(self, f_ids) -> list[tuple[float, float]]:
         return [p for f_id in f_ids if (p := self.app.get_rt_mz(f_id)) is not None]
 
     def _precursor_window(self) -> tuple[float, float, float]:
@@ -312,7 +349,7 @@ class ScatterPanel(CollapsibleSection):
         artists = []
         for f_ids, color, label in ((annotated - highlighted, "green", "Annotated"),
                                     (annotated & highlighted, "gold", "Annotated + highlighted")):
-            if points := self._points(f_ids):
+            if points := self._rt_mz_points(f_ids):
                 rts, mzs = zip(*points)
                 # same size as the highlighted features of FeatureManagerDB.plot_scatter
                 artists.append(self.ax.scatter(rts, mzs, c=color, s=20, zorder=3, label=label))
@@ -323,11 +360,20 @@ class ScatterPanel(CollapsibleSection):
         if self.ax is None:
             return
         artists = []
-        if self.tk_circle_matches.get() and (points := self._points(self.app.get_filtered_feature_ids())):
+        filtered: list[int] = self.app.get_filtered_feature_ids()
+        if self.tk_circle_matches.get() and (points := self._rt_mz_points(filtered)):
             rts, mzs = zip(*points)
             artists.append(self.ax.scatter(rts, mzs, s=120, facecolors='none', edgecolors='black', linewidths=2,
-                                           zorder=10, label='Library match'))
+                                           zorder=10, label='In the table'))
         self._replace_artists("filtered", artists)
+        # veil over the features the filters remove (above the points, below annotations and markers)
+        faded = []
+        if self.tk_fade_others.get() and filtered:
+            f_ids, rts, mzs = self.app.feature_positions()
+            others = ~np.isin(f_ids, filtered)
+            faded.append(self.ax.scatter(rts[others], mzs[others], s=16, color="white", alpha=0.75, linewidths=0,
+                                         zorder=2.5))
+        self._replace_artists("faded", faded)
 
     def mark_selected_feature(self, f_id_meas: int | None, show: bool = False):
         """Circle the given feature in red (None: no feature). show: pan the plot to it if it is outside the view."""
@@ -408,7 +454,7 @@ class ScatterPanel(CollapsibleSection):
         if self.app.filters.tk_only_marked.get():
             self.app.apply_filters(show_empty_message=False, show_dialogs=False)
 
-    def on_view_changed(self, ax=None):
+    def on_view_changed(self, changed_axes=None):
         """Zoomed or panned (each limit reports separately, while dragging many times): update the table once the
         view rests, if it shows only the visible region."""
         if self.view_changed_job is not None:
@@ -420,11 +466,11 @@ class ScatterPanel(CollapsibleSection):
         if self.app.filters.tk_only_visible.get() and self.visible_region() != self.filtered_view:
             self.app.apply_filters(show_empty_message=False, show_dialogs=False)
 
-    def toggle_only_visible(self, event=None):
+    def toggle_only_visible(self):
         self.app.filters.tk_only_visible.set(not self.app.filters.tk_only_visible.get())
         self.app.apply_filters(show_empty_message=False)
 
-    def toggle_only_marked(self, event=None):
+    def toggle_only_marked(self):
         self.app.filters.tk_only_marked.set(not self.app.filters.tk_only_marked.get())
         self.app.apply_filters(show_empty_message=False)
 
@@ -559,7 +605,7 @@ class ScatterPanel(CollapsibleSection):
     # ---- series -----------------------------------------------------------------------------------------------------
     def fit_series(self, f_ids: list[int]) -> SeriesFit | None:
         """Line through the features of a series (None for less than two features or without common m/z step)."""
-        points = self._points(f_ids)
+        points = self._rt_mz_points(f_ids)
         if len(points) < 2:
             return None
         rts, mzs = np.array(points).T
@@ -595,7 +641,7 @@ class ScatterPanel(CollapsibleSection):
             for a in range(b):
                 if fits[a] is None or fits[b] is None:
                     continue
-                points_a, points_b = np.array(self._points(self.series[a])), np.array(self._points(self.series[b]))
+                points_a, points_b = np.array(self._rt_mz_points(self.series[a])), np.array(self._rt_mz_points(self.series[b]))
                 try:
                     tolerance: float = self.app.matching.precursor_tolerance_da(float(points_a[:, 1].mean()))
                 except tk.TclError:
@@ -638,7 +684,7 @@ class ScatterPanel(CollapsibleSection):
         view = self.ax.get_xlim(), self.ax.get_ylim()
         for i, f_ids in enumerate(self.series):
             color: str = SERIES_COLORS[i % len(SERIES_COLORS)]
-            if not (points := self._points(f_ids)):
+            if not (points := self._rt_mz_points(f_ids)):
                 continue
             rts, mzs = zip(*points)
             artists.append(self.ax.scatter(rts, mzs, s=110, marker="D", facecolors="none",
@@ -655,7 +701,7 @@ class ScatterPanel(CollapsibleSection):
                 artists.append(self.ax.scatter(rts_predicted, mzs_predicted, s=60, marker="x",
                                                            color=color, linewidths=2, zorder=13))
             if candidates := self.find_series_candidates(fit):
-                if points := self._points([f_id for f_ids_n in candidates.values() for f_id in f_ids_n]):
+                if points := self._rt_mz_points([f_id for f_ids_n in candidates.values() for f_id in f_ids_n]):
                     rts_found, mzs_found = zip(*points)
                     artists.append(self.ax.scatter(rts_found, mzs_found, s=200, marker="o",
                                                                facecolors="none", edgecolors=color, linewidths=1.5,
@@ -671,7 +717,7 @@ class ScatterPanel(CollapsibleSection):
             rts_knots, mzs_knots = zip(*mesh.knots)
             artists.append(self.ax.scatter(rts_knots, mzs_knots, s=12, color="gray", alpha=0.5,
                                                        zorder=11, label=mesh.describe()))
-            if points := self._points(self.find_mesh_features(mesh)):
+            if points := self._rt_mz_points(self.find_mesh_features(mesh)):
                 rts_found, mzs_found = zip(*points)
                 artists.append(self.ax.scatter(rts_found, mzs_found, s=200, marker="o",
                                                            facecolors="none", edgecolors="gray", linewidths=1.5,
@@ -770,10 +816,7 @@ class ScatterPanel(CollapsibleSection):
         Keys only reach the canvas if it has the focus: take it while the mouse is over the plot and give it back to
         the previous widget (e.g. a filter field) when the mouse leaves.
         """
-        try:
-            focused = self.app.tk_root.focus_get()
-        except KeyError:  # tkinter can't resolve some internal widgets, e.g. the open list of a combobox
-            focused = None
+        focused = focused_widget(self.app.tk_root)
         canvas_widget = self.canvas.get_tk_widget()
         if focused is not canvas_widget:
             self.focus_before_plot = focused
@@ -781,7 +824,7 @@ class ScatterPanel(CollapsibleSection):
 
     def on_leave(self, event):
         canvas_widget = self.canvas.get_tk_widget()
-        if self.focus_before_plot is not None and self.app.tk_root.focus_get() is canvas_widget:
+        if self.focus_before_plot is not None and focused_widget(canvas_widget) is canvas_widget:
             try:
                 self.focus_before_plot.focus_set()
             except tk.TclError:  # widget was destroyed in the meantime
@@ -789,9 +832,9 @@ class ScatterPanel(CollapsibleSection):
         self.focus_before_plot = None
 
     def on_key(self, event):
-        """Keys while the mouse is over the plot, see PLOT_KEYS."""
+        """Keys while the plot has the keyboard focus (the mouse is over it or it was clicked), see PLOT_KEYS."""
         # key names depend on the keyboard and on whether the key produces a character (e.g. numpad)
-        if event.inaxes is not self.ax:
+        if self.ax is None or event.key is None:
             return
         for keys, _, _, method in PLOT_KEYS:
             if event.key in keys:
@@ -807,10 +850,14 @@ class ScatterPanel(CollapsibleSection):
         self.canvas.draw_idle()
 
     def _zoom(self, event, scale: float):
-        """Zoom by scale, the point under the mouse stays where it is."""
+        """Zoom by scale, the point under the mouse stays where it is (the center if the mouse is beside the axes)."""
         (x_min, x_max), (y_min, y_max) = self.ax.get_xlim(), self.ax.get_ylim()
-        self._set_view((event.xdata - (event.xdata - x_min) * scale, event.xdata + (x_max - event.xdata) * scale),
-                       (event.ydata - (event.ydata - y_min) * scale, event.ydata + (y_max - event.ydata) * scale))
+        if event.inaxes is self.ax:
+            x, y = event.xdata, event.ydata
+        else:
+            x, y = (x_min + x_max) / 2, (y_min + y_max) / 2
+        self._set_view((x - (x - x_min) * scale, x + (x_max - x) * scale),
+                       (y - (y - y_min) * scale, y + (y_max - y) * scale))
 
     def zoom_in(self, event):
         self._zoom(event, 1 / self.ZOOM_FACTOR)
@@ -838,8 +885,10 @@ class ScatterPanel(CollapsibleSection):
     def previous_view(self, event=None):
         self.toolbar.back()
 
-    def zoom_to_table(self, event=None):
+    def zoom_to_table(self):
         """Fit the view to the features of the (filtered) results table."""
+        if self.ax is None:
+            return
         in_table = set(self.app.results.table.feature_id_meas)
         f_ids, rts, mzs = self.app.feature_positions()
         mask = np.isin(f_ids, list(in_table))
