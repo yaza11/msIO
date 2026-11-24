@@ -23,6 +23,8 @@ jobs:
             script: msIO/gui/library_search_by_name.py
           - name: msIO_CSVtoSQLite
             script: msIO/gui/csv_to_sqlite_gui.py
+          - name: msIO_GUI
+            script: msIO/gui/main.py
     steps:
       - uses: actions/checkout@v4
 
@@ -61,14 +63,10 @@ jobs:
           $piArgs += "${{ matrix.script }}"
           python -m PyInstaller @piArgs
 
-      - name: Zip build
-        shell: pwsh
-        run: Compress-Archive -Path "dist/${{ matrix.name }}" -DestinationPath "${{ matrix.name }}-windows.zip"
-
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
-          path: ${{ matrix.name }}-windows.zip
+          path: ${{ matrix.name }}
 
       - uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
