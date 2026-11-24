@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 from LipidCalculator import CompoundDict
 
-from msIO.gui.annotation.common import FEATURE_RELATION_KINDS, CollapsibleSection
+from msIO.gui.annotation.common import (
+    FEATURE_RELATION_KINDS, CollapsibleSection, add_tooltip, checkbutton_with_tooltip, label_with_tooltip
+)
 
 if TYPE_CHECKING:
     from msIO.gui.annotation.app import AnnotationGUI
@@ -30,8 +32,10 @@ _TOLERANCE = re.compile(rf'({_NUMBER})\s*(?:±|\+-|\+/-)\s*({_NUMBER})\s*(ppm|%)
 _BOUND = re.compile(rf'(<=|>=|<|>)\s*({_NUMBER})')
 # (lower, upper, lower included, upper included)
 Interval = tuple[float, float, bool, bool]
-INTERVAL_HELP: str = ('Number fields take intervals, several separated by ";": 400-500; 512.3±0.01; 1302.4±5ppm; 7±1%; '
-                      '>2; <=10; 3 (exactly)')
+INTERVAL_HELP: str = ('Intervals, several separated by ";": 400-500; 512.3±0.01; 1302.4±5ppm; 7±1%; >2; <=10; '
+                      '3 (exactly)')
+# columns filtered by their absolute value (the |Δm/z| columns already hold absolute values)
+ABSOLUTE_COLUMNS: set[str] = {'dccs_percent'}
 
 
 def parse_intervals(text: str) -> list[Interval]:
@@ -108,18 +112,26 @@ class FilterPanel(CollapsibleSection):
     LIVE_FILTER_DELAY_MS: int = 300
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, "Filters (applied while typing)")
+        super().__init__(parent, "Filters", tooltip=(
+            "Filters of the results table, applied while typing. Number fields take intervals: " + INTERVAL_HELP
+            + ".\nCtrl+F: go to the name filter, Ctrl+Shift+F: remove all filters, Esc: leave a field."))
         self.app: "AnnotationGUI" = app
         self.live_filter_job: str = None
         self.last_values: tuple[str, ...] = None
         self.tk_add_dummies: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
+        self.tk_add_annotations: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
         self.tk_hide_related: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
+        # restrict the table to the scatter plot: features marked there (highlights, mass differences, series) and the
+        # visible region (follows zooming and panning)
+        self.tk_only_marked: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
+        self.tk_only_visible: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
 
         # each filter occupies a group of two grid columns: label, entry
-        def add_filter(row: int, group: int, label: str, width: int = 16) -> ttk.Entry:
-            ttk.Label(self.body, text=label).grid(row=row, column=2 * group, sticky="w", padx=(10, 4), pady=2)
+        def add_filter(row: int, group: int, label: str, width: int = 16, tooltip: str = INTERVAL_HELP) -> ttk.Entry:
             tk_entry = ttk.Entry(self.body, width=width)
             tk_entry.grid(row=row, column=2 * group + 1, sticky="w")
+            label_with_tooltip(self.body, label, tooltip, tk_entry).grid(row=row, column=2 * group, sticky="w",
+                                                                        padx=(10, 4), pady=2)
             return tk_entry
 
         # properties of the measured features: intervals
@@ -130,38 +142,72 @@ class FilterPanel(CollapsibleSection):
         self.tk_intensity = add_filter(4, 0, "Σ intensity")
         self.tk_i1_i0 = add_filter(5, 0, "I1 / I0")
         # numbers of the matches
-        self.tk_min_ms2_score = add_filter(0, 1, "Min. MS2 score", width=10)
-        self.tk_min_n_hits_ms2 = add_filter(1, 1, "Min. #MS2 peak matches", width=10)
+        self.tk_min_ms2_score = add_filter(0, 1, "Min. MS2 score", width=10, tooltip="Lowest MS2 score of a match (0-1).")
+        self.tk_min_n_hits_ms2 = add_filter(1, 1, "Min. #MS2 peak matches", width=10,
+                                            tooltip="Lowest number of matched MS2 peaks.")
         self.tk_dmz_mda = add_filter(2, 1, "|Δm/z| (mDa)", width=10)
         self.tk_dmz_ppm = add_filter(3, 1, "|Δm/z| (ppm)", width=10)
-        self.tk_dccs = add_filter(4, 1, "ΔCCS (%)", width=10)
+        self.tk_dccs = add_filter(4, 1, "|ΔCCS| (%)", width=10,
+                                  tooltip="Absolute CCS difference to the library entry in %. " + INTERVAL_HELP)
         self.tk_xlogp = add_filter(5, 1, "logP", width=10)
         # texts of the matches
-        self.tk_subformula = add_filter(0, 2, "Formula contains", width=18)
-        self.tk_name = add_filter(1, 2, "Name contains (a; b)", width=18)
-        self.tk_name_excluded = add_filter(2, 2, "Name excludes (a; b)", width=18)
-        self.tk_library = add_filter(3, 2, "Library contains (a | b)", width=18)
-        self.tk_library_excluded = add_filter(4, 2, "Library excludes (a; b)", width=18)
+        self.tk_subformula = add_filter(0, 2, "Formula contains", width=18,
+                                        tooltip="Formulas with at least these atoms, e.g. C40N.")
+        self.tk_name = add_filter(1, 2, "Name contains", width=18,
+                                  tooltip="Names containing all of the texts, several separated by \";\" "
+                                          "(not case-sensitive).")
+        self.tk_name_excluded = add_filter(2, 2, "Name excludes", width=18,
+                                           tooltip="Names containing none of the texts (separated by \";\").")
+        self.tk_library = add_filter(3, 2, "Library contains", width=18,
+                                     tooltip="Library file name or source containing one of the texts, several "
+                                             "separated by \"|\".")
+        self.tk_library_excluded = add_filter(4, 2, "Library excludes", width=18,
+                                              tooltip="Library file name or source containing none of the texts "
+                                                      "(separated by \";\").")
 
         # at most this many rows per feature (empty: all), optionally with a dummy row holding only the feature
         tk_rows = ttk.Frame(self.body)
         tk_rows.grid(row=5, column=4, columnspan=2, sticky="w", padx=(10, 0))
-        ttk.Label(tk_rows, text="Max. rows per feature").pack(side="left", padx=(0, 4))
+        tk_max_rows_label = ttk.Label(tk_rows, text="Max. rows per feature")
+        tk_max_rows_label.pack(side="left", padx=(0, 4))
         self.tk_max_rows = ttk.Entry(tk_rows, width=6)
         self.tk_max_rows.pack(side="left")
-        ttk.Checkbutton(tk_rows, text="Dummy row per feature", variable=self.tk_add_dummies,
-                        command=lambda: app.apply_filters()).pack(side="left", padx=(8, 0))
+        add_tooltip("At most this many rows per feature: the dummy and annotation rows first, then the matches with the "
+                    "highest MS2 score. Empty: all.", tk_max_rows_label, self.tk_max_rows)
 
-        ttk.Label(self.body, text=INTERVAL_HELP, foreground="gray").grid(row=6, column=0, columnspan=4, sticky="w",
-                                                                         padx=(10, 0), pady=(2, 0))
-        tk_buttons = ttk.Frame(self.body)
-        tk_buttons.grid(row=7, column=0, columnspan=6, sticky="ew", pady=(2, 0))
-        ttk.Checkbutton(tk_buttons, text="Hide features marked as fragment, duplicate, isotope peak or adduct",
-                        variable=self.tk_hide_related, command=lambda: app.apply_filters()).pack(
-            side="left", padx=(10, 0))
-        ttk.Button(tk_buttons, text="Remove filters", command=app.on_click_remove_filters).pack(side="right")
-        ttk.Button(tk_buttons, text="m/z from compound ...", command=app.on_click_mz_from_compound).pack(
-            side="right", padx=5)
+        def add_check(master: tk.Misc, text: str, variable: tk.BooleanVar, tooltip: str) -> ttk.Checkbutton:
+            return checkbutton_with_tooltip(master, text, variable, lambda: app.apply_filters(), tooltip)
+
+        # rows besides the matches, plot and annotation filters
+        tk_options = ttk.Frame(self.body)
+        tk_options.grid(row=6, column=0, columnspan=6, sticky="ew", pady=(4, 0))
+        add_check(tk_options, "Dummy rows", self.tk_add_dummies,
+                  "One gray row per measured feature with its properties only, also for features without "
+                  "library match.").pack(side="left", padx=(10, 0))
+        add_check(tk_options, "Annotation rows", self.tk_add_annotations,
+                  "One blue row per annotation of a feature, in the measured database or to add (library matches, "
+                  "manual annotations, fragments, duplicates, isotopes, adducts).").pack(side="left", padx=(8, 0))
+        add_check(tk_options, "Hide related features", self.tk_hide_related,
+                  "Hide features marked as in-source fragment, duplicate, isotope peak or adduct of another "
+                  "feature.").pack(side="left", padx=(8, 0))
+        ttk.Button(tk_options, text="Remove filters", command=app.on_click_remove_filters).pack(side="right")
+        tk_mz_button = ttk.Button(tk_options, text="m/z from compound ...", command=app.on_click_mz_from_compound)
+        tk_mz_button.pack(side="right", padx=5)
+        add_tooltip("Set the m/z filter from a compound: searched in the libraries, built with the IPL builder or "
+                    "typed in; IPL batches filter for many compounds.", tk_mz_button)
+
+        tk_plot_filters = ttk.Frame(self.body)
+        tk_plot_filters.grid(row=7, column=0, columnspan=6, sticky="w", pady=(2, 0))
+        tk_plot_label = ttk.Label(tk_plot_filters, text="Scatter plot:")
+        tk_plot_label.pack(side="left", padx=(10, 0))
+        add_tooltip("Restrict the table to the scatter plot.", tk_plot_label)
+        add_check(tk_plot_filters, "only marked features (M)", self.tk_only_marked,
+                  "Only features marked in the scatter plot: highlighted fragments / losses, mass difference pairs, "
+                  "series and their predicted members. Updates when the marks change. M toggles it.").pack(
+            side="left", padx=6)
+        add_check(tk_plot_filters, "only the visible region (V)", self.tk_only_visible,
+                  "Only features in the shown region of the scatter plot, follows zooming and panning. V toggles "
+                  "it.").pack(side="left")
 
         # (entry, column of the results table, name in error messages)
         self.feature_intervals: list[tuple[ttk.Entry, str, str]] = [
@@ -175,7 +221,7 @@ class FilterPanel(CollapsibleSection):
         self.match_intervals: list[tuple[ttk.Entry, str, str]] = [
             (self.tk_dmz_mda, 'dmz_mda', '|Δm/z| (mDa)'),
             (self.tk_dmz_ppm, 'dmz_ppm', '|Δm/z| (ppm)'),
-            (self.tk_dccs, 'dccs_percent', 'ΔCCS'),
+            (self.tk_dccs, 'dccs_percent', '|ΔCCS|'),
             (self.tk_xlogp, 'xlogp', 'logP'),
         ]
         # filters that require a match (see compute_mask)
@@ -247,7 +293,10 @@ class FilterPanel(CollapsibleSection):
             except ValueError as error:
                 raise FilterError('Value Error', f'{name}: {error}')
             if intervals:
-                mask &= in_intervals(table[column], intervals)
+                values = table[column]
+                if column in ABSOLUTE_COLUMNS:
+                    values = pd.to_numeric(values, errors='coerce').abs()
+                mask &= in_intervals(values, intervals)
         return mask
 
     @staticmethod
@@ -272,6 +321,20 @@ class FilterPanel(CollapsibleSection):
             for substring in substrings
         ])
 
+    def _plot_mask(self, table: pd.DataFrame) -> np.ndarray:
+        """Rows of features marked in the scatter plot and / or in its visible region (if these filters are set)."""
+        mask = np.ones(table.shape[0], dtype=bool)
+        scatter = self.app.scatter
+        if self.tk_only_marked.get():
+            mask &= table.feature_id_meas.isin(scatter.marked_feature_ids()).to_numpy(dtype=bool)
+        scatter.filtered_view = None
+        if self.tk_only_visible.get() and (region := scatter.visible_region()) is not None:
+            (rt_min, rt_max), (mz_min, mz_max) = region
+            mask &= in_intervals(table.RT, [(rt_min, rt_max, True, True)])
+            mask &= in_intervals(table.mz_meas, [(mz_min, mz_max, True, True)])
+            scatter.filtered_view = region  # the table is up to date for this region
+        return mask
+
     def compute_mask(self, table: pd.DataFrame) -> np.ndarray:
         """
         Rows of the results table (matches and possibly dummy rows) that pass all filters.
@@ -283,6 +346,7 @@ class FilterPanel(CollapsibleSection):
         if self.tk_hide_related.get():
             related: set[int] = self.app.annotations.annotated_feature_ids(kinds=FEATURE_RELATION_KINDS)
             feature_mask &= ~table.feature_id_meas.isin(related).to_numpy(dtype=bool)
+        feature_mask &= self._plot_mask(table)
 
         match_mask = self._apply_interval_filters(table, self.match_intervals)
         match_mask &= self._apply_minimum_filters(table, [

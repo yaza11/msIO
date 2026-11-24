@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from msIO.gui.annotation.annotations import AnnotationStore
-from msIO.gui.annotation.common import CollapsibleSection
+from msIO.gui.annotation.common import CollapsibleSection, SortKeys, next_sort_keys, show_sort_keys
 from msIO.gui.annotation.matching import empty_matches_table
 
 if TYPE_CHECKING:
@@ -20,7 +20,9 @@ class ResultsPanel(CollapsibleSection):
     Filtered matches in a table:
         click on a header       sort ascending -> descending -> default order (Ctrl+click: further sort key)
         select a row            show the match in the overview (AnnotationGUI.on_match_selected)
+        ↑ / ↓                   previous / next row (Ctrl: previous / next measured feature)
         shift+click on a row    add its measured feature to the comparison
+        Ctrl+click on a row     add its measured feature to the series (as Ctrl+click in the scatter plot)
         right click / Ctrl+C    copy cell, row or table
     The buttons below collect annotations (see AnnotationGUI).
     """
@@ -57,29 +59,42 @@ class ResultsPanel(CollapsibleSection):
     ROW_COLORS: list[str] = ["#E5FFCC", "#FFCCCC", "#CCFFCC", "#CCFFFF", "#CCCCFF", "#FFE5CC"]
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, "Results", stretch=True)
+        super().__init__(parent, "Results", stretch=True, tooltip=(
+            "Matches of the measured features with the libraries, features with the best MS2 score first.\n"
+            "Click a row: show it in the overview and the scatter plot. ↑ / ↓: previous / next row, Ctrl+↑ / ↓: "
+            "previous / next feature.\n"
+            "Shift+click a row: compare its feature, Ctrl+click: add it to a series.\n"
+            "Click a column header: sort (again: descending, again: default order), Ctrl+click: further sort key.\n"
+            "Right click / Ctrl+C: copy. Gray rows: dummy rows (feature only), blue rows: annotations."))
         self.app: "AnnotationGUI" = app
         self.columns: list[str] = list(self.COLUMNS)
         self.headings: dict[str, str] = {column: heading for column, (heading, _, _) in self.COLUMNS.items()}
         # shown (filtered and sorted) matches, the rows of the table are in this order
         self.table: pd.DataFrame = empty_matches_table(self.columns)
-        # (column, descending) per clicked header, the first one is the primary key; empty: default order
-        self.sort_keys: list[tuple[str, bool]] = []
+        # clicked column headers, empty: default order
+        self.sort_keys: SortKeys = []
         # set while selection events caused by the program are pending, see _ignore_pending_select_events
         self.ignore_select: bool = False
 
-        tk_table_frame = ttk.Frame(self.body)
+        # small requested size: the table fills the space it gets and scrolls its rows and columns itself (it would ask
+        # for the width of all columns, the section would then scroll instead)
+        tk_table_frame = ttk.Frame(self.body, width=300, height=120)
+        tk_table_frame.grid_propagate(False)
         tk_table_frame.pack(fill="both", expand=True)
         self.tk_tree: ttk.Treeview = ttk.Treeview(tk_table_frame, columns=self.columns, show="headings",
                                                   selectmode="browse")
         for column, (heading, width, anchor) in self.COLUMNS.items():
-            self.tk_tree.heading(column, text=heading, command=lambda c=column: self.on_click_heading(c))
-            self.tk_tree.column(column, width=width, anchor=anchor,
-                                stretch=column in ("name", "source_library", "library"))
+            self.tk_tree.heading(column, text=heading, command=lambda clicked=column: self.on_click_heading(clicked))
+            # no stretching: otherwise the other columns jump when a column is resized
+            self.tk_tree.column(column, width=width, anchor=anchor, stretch=False)
         # dummy rows only hold the properties of the measured feature
         self.tk_tree.tag_configure("dummy", foreground="gray40")
+        self.tk_tree.tag_configure("annotation", foreground="#1F4E9C")
         self.tk_tree.bind("<<TreeviewSelect>>", self.on_select)
+        # keyboard focus on click, so that the arrow keys and Ctrl+C work right away
+        self.tk_tree.bind("<Button-1>", lambda event: self.tk_tree.focus_set())
         self.tk_tree.bind("<ButtonRelease-1>", self.on_release)
+        self.tk_tree.bind("<Control-Button-1>", self.on_ctrl_click)
         self.tk_tree.bind("<Control-ButtonRelease-1>", self.on_ctrl_release)
         self.tk_tree.bind("<Shift-Button-1>", self.on_shift_click)
         # the release of a shift+click must not show the match of the selected row (on_release)
@@ -87,7 +102,12 @@ class ResultsPanel(CollapsibleSection):
         # treeview cells can't be selected, so copying works with Ctrl+C (selected row) and a context menu
         self.tk_menu = tk.Menu(self.tk_tree, tearoff=False)
         self.tk_tree.bind("<Button-3>", self.on_right_click)
-        self.tk_tree.bind("<Control-c>", lambda event: self.copy_selected_row())
+        for sequence in ("<Control-c>", "<Control-C>"):  # C: with caps lock
+            self.tk_tree.bind(sequence, lambda event: self.copy_selected_row())
+        # Ctrl+↑ / ↓ jump to the previous / next feature (also bound to the window, see shortcuts.py), here the
+        # treeview would also move one row first
+        for sequence, step in (("<Control-Up>", -1), ("<Control-Down>", 1)):
+            self.tk_tree.bind(sequence, lambda event, direction=step: self._jump_to_feature(direction))
 
         y_scroll = ttk.Scrollbar(tk_table_frame, orient="vertical", command=self.tk_tree.yview)
         x_scroll = ttk.Scrollbar(tk_table_frame, orient="horizontal", command=self.tk_tree.xview)
@@ -131,6 +151,7 @@ class ResultsPanel(CollapsibleSection):
                 self._ignore_pending_select_events()
                 item: str = self.tk_tree.get_children()[int(np.argmax(is_selected))]
                 self.tk_tree.selection_set(item)
+                self.tk_tree.focus(item)
                 self.tk_tree.see(item)
 
     def clear(self):
@@ -149,7 +170,8 @@ class ResultsPanel(CollapsibleSection):
         self.tk_tree.configure(displaycolumns=[column for column in self.columns if column not in hidden])
         if table.empty:
             return
-        f_ids_meas = sorted(table['feature_id_meas'].unique())
+        # in the order shown, so neighbouring features differ in color
+        f_ids_meas = pd.unique(table['feature_id_meas'])
         for color_idx, f_id_meas in enumerate(f_ids_meas):
             self.tk_tree.tag_configure(f"feature_{f_id_meas}",
                                        background=self.ROW_COLORS[color_idx % len(self.ROW_COLORS)])
@@ -163,16 +185,24 @@ class ResultsPanel(CollapsibleSection):
         rows: list[list] = cells.where(cells.notna(), "").to_numpy().tolist()
         idx_annotation: int = self.columns.index("annotation")
         annotations: AnnotationStore = self.app.annotations
-        for values, row in zip(rows, table[['feature_id_meas', 'library', 'feature_id_lib', 'is_dummy']].itertuples()):
+        row_columns = ['feature_id_meas', 'library', 'feature_id_lib', 'is_dummy', 'is_annotation', 'annotation_key']
+        for values, row in zip(rows, table[row_columns].itertuples()):
             values[idx_annotation] = self._annotation_state(row)
-            tags = (f"feature_{row.feature_id_meas}", "dummy") if row.is_dummy else (f"feature_{row.feature_id_meas}",)
+            tags = (f"feature_{row.feature_id_meas}",)
+            if row.is_dummy:
+                tags += ("dummy",)
+            elif row.is_annotation:
+                tags += ("annotation",)
             self.tk_tree.insert("", 'end', values=values, tags=tags)
 
     def _annotation_state(self, row) -> str:
-        """State of the annotation with the library match of a row (dummy rows have none)."""
+        """State of the annotation of a row: of its library match, of the annotation of an annotation row; dummy rows
+        have none."""
         if row.is_dummy:
             return ""
         annotations: AnnotationStore = self.app.annotations
+        if row.is_annotation:
+            return annotations.state(row.annotation_key)
         return annotations.state(annotations.library_key(row.feature_id_meas, row.library, row.feature_id_lib))
 
     def refresh_annotation_column(self):
@@ -201,38 +231,29 @@ class ResultsPanel(CollapsibleSection):
             table = table.loc[values.sort_values(ascending=not descending, na_position="last", kind="mergesort").index]
         return table
 
-    def on_click_heading(self, column: str, secondary: bool = False):
+    def on_click_heading(self, column: str, further_key: bool = False):
         """
         Click on a column header: sort by it, ascending -> descending -> default order.
-        Ctrl+click (secondary): add the column as further sort key (same cycle for that key).
+        Ctrl+click (further_key): add the column as further sort key (same cycle for that key).
         """
-        keys: list[tuple[str, bool]] = self.sort_keys
-        position = next((i for i, (c, _) in enumerate(keys) if c == column), None)
-        if not secondary or not keys:
-            if position == 0:  # primary key: reverse, then back to the default order
-                self.sort_keys = [(column, True)] + keys[1:] if not keys[0][1] else []
-            else:
-                self.sort_keys = [(column, False)]
-        elif position is None:
-            self.sort_keys = keys + [(column, False)]
-        elif not keys[position][1]:
-            self.sort_keys = keys[:position] + [(column, True)] + keys[position + 1:]
-        else:
-            self.sort_keys = keys[:position] + keys[position + 1:]
-
-        numbered: bool = len(self.sort_keys) > 1
-        arrows = {c: (" ▼" if descending else " ▲") + (str(i + 1) if numbered else "")
-                  for i, (c, descending) in enumerate(self.sort_keys)}
-        for c, heading in self.headings.items():
-            self.tk_tree.heading(c, text=heading + arrows.get(c, ""))
+        self.sort_keys = next_sort_keys(self.sort_keys, column, further_key)
+        show_sort_keys(self.tk_tree, self.headings, self.sort_keys)
         self.set_table(self.table)
+
+    def on_ctrl_click(self, event):
+        """Ctrl+click on a row: add its measured feature to the series (or remove it), like Ctrl+click in the plot."""
+        if not (item := self.tk_tree.identify_row(event.y)):
+            return None  # e.g. the header: further sort key, see on_ctrl_release
+        row = self.table.iloc[self.tk_tree.index(item)]
+        self.app.scatter.on_series_click(int(row.feature_id_meas))
+        return "break"  # keep the selection
 
     def on_ctrl_release(self, event):
         """Ctrl+click on a column header: further sort key."""
         if self.tk_tree.identify_region(event.x, event.y) != "heading":
             return None
         column: str = self._column_at(event.x)
-        self.on_click_heading(column, secondary=True)
+        self.on_click_heading(column, further_key=True)
         return "break"  # don't invoke the normal sorting of the header
 
     def _column_at(self, x: int) -> str:
@@ -265,8 +286,56 @@ class ResultsPanel(CollapsibleSection):
         if not show_match:
             self._ignore_pending_select_events()
         self.tk_tree.selection_set(item)
+        self.tk_tree.focus(item)
         self.tk_tree.see(item)
         return True
+
+    def clear_selection(self):
+        """Deselect the selected row (e.g. a feature without row was clicked in the plot)."""
+        if self.tk_tree.selection():
+            self._ignore_pending_select_events()
+            self.tk_tree.selection_set(())
+
+    def select_adjacent_feature(self, step: int):
+        """
+        Select the first row of the next (step 1) or previous (step -1) measured feature in the shown order, i.e. skip
+        the other matches of the selected feature. Without selection, the first / last row is selected.
+        """
+        items: tuple[str, ...] = self.tk_tree.get_children()
+        if not items:
+            return
+        f_ids: np.ndarray = self.table.feature_id_meas.to_numpy()
+        if not (selection := self.tk_tree.selection()):
+            idx = 0 if step > 0 else len(items) - 1
+        else:
+            idx = self.tk_tree.index(selection[0])
+            current = f_ids[idx]
+            while 0 <= idx < len(items) and f_ids[idx] == current:
+                idx += step
+            if not 0 <= idx < len(items):
+                self.app.set_status("No further feature in the table.")
+                return
+        # first row of that feature
+        while idx > 0 and f_ids[idx - 1] == f_ids[idx]:
+            idx -= 1
+        self.tk_tree.selection_set(items[idx])
+        self.tk_tree.focus(items[idx])
+        self.tk_tree.see(items[idx])
+
+    def _jump_to_feature(self, direction: int) -> str:
+        """Ctrl+↑ / ↓ in the table, "break": the treeview must not move one row as well."""
+        self.select_adjacent_feature(direction)
+        return "break"
+
+    def focus_table(self):
+        """Keyboard focus to the table (arrow keys move the selection), the first row is selected if none is."""
+        items: tuple[str, ...] = self.tk_tree.get_children()
+        if items and not self.tk_tree.selection():
+            self.tk_tree.selection_set(items[0])
+        if selection := self.tk_tree.selection():
+            self.tk_tree.focus(selection[0])
+            self.tk_tree.see(selection[0])
+        self.tk_tree.focus_set()
 
     def _ignore_pending_select_events(self):
         """

@@ -11,7 +11,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 from msIO.feature_managers.db import FeatureManagerDB, Library
-from msIO.gui.annotation.common import CollapsibleSection, pack_canvas
+from msIO.gui.annotation.common import (
+    CollapsibleSection, add_tooltip, canvas_has_focus, create_canvas, focused_widget, pack_canvas
+)
 from msIO.gui.feature_overview import (
     OVERVIEW_PANELS, OverviewData, OverviewSettings, PlottedSpectrum, SpectrumKey, build_overview_figure,
     gather_feature, gather_library, peak_key
@@ -33,10 +35,13 @@ class OverviewPanel(CollapsibleSection):
     annotations and select the plots. Clicking an MS2 peak edits its annotation.
     """
 
-    DEFAULT_TITLE: str = "Overview (select a match in the table or features in the scatter plot)"
+    DEFAULT_TITLE: str = "Overview"
 
     def __init__(self, parent: tk.Misc, app: "AnnotationGUI"):
-        super().__init__(parent, self.DEFAULT_TITLE, on_toggle=lambda expanded: app.on_toggle_plot_section())
+        super().__init__(parent, self.DEFAULT_TITLE, on_toggle=lambda expanded: app.on_toggle_plot_section(),
+                         tooltip="The selected match (table row), a feature (click in the scatter plot) or two "
+                                 "compared features (Shift+click): MS2, MS1, intensities in the samples and the "
+                                 "structure. Click an MS2 peak to annotate it."),
         self.app: "AnnotationGUI" = app
         self.tk_hide_isotope_peaks: tk.BooleanVar = tk.BooleanVar(app.tk_root, value=False)
         self.tk_annotation_cutoff: tk.DoubleVar = tk.DoubleVar(app.tk_root, value=0.3)
@@ -63,14 +68,22 @@ class OverviewPanel(CollapsibleSection):
 
         tk_controls = ttk.Frame(self.body)
         tk_controls.pack(fill="x")
-        ttk.Label(tk_controls, text="Feature ID(s)").pack(side="left")
+        tk_ids_label = ttk.Label(tk_controls, text="Feature ID(s)")
+        tk_ids_label.pack(side="left")
         self.tk_feature_ids_entry = ttk.Entry(tk_controls, width=14)
+        add_tooltip("One ID: select the feature (as a click in the scatter plot), two IDs: compare them. Enter: show. "
+                    "Shows the IDs of the overview. Ctrl+G: go here.", tk_ids_label, self.tk_feature_ids_entry)
         self.tk_feature_ids_entry.pack(side="left", padx=(4, 0))
         self.tk_feature_ids_entry.bind("<Return>", lambda event: self.on_submit_feature_ids())
         ttk.Button(tk_controls, text="Show", command=self.on_submit_feature_ids).pack(side="left", padx=(3, 15))
-        ttk.Checkbutton(tk_controls, text="Hide precursor isotope peaks (±4 Da)", variable=self.tk_hide_isotope_peaks,
-                        command=self.redraw).pack(side="left")
-        ttk.Label(tk_controls, text="Annotation cutoff").pack(side="left", padx=(15, 3))
+        tk_isotopes = ttk.Checkbutton(tk_controls, text="Hide precursor isotopes", variable=self.tk_hide_isotope_peaks,
+                                      command=self.redraw)
+        tk_isotopes.pack(side="left")
+        add_tooltip("Hide MS2 peaks within ±4 Da of the precursor (isotope peaks of the precursor).", tk_isotopes)
+        tk_cutoff_label = ttk.Label(tk_controls, text="Annotation cutoff")
+        tk_cutoff_label.pack(side="left", padx=(15, 3))
+        add_tooltip("MS2 peaks above this relative intensity are labeled with their m/z or annotation.",
+                    tk_cutoff_label)
         ttk.Scale(tk_controls, from_=0, to=1, variable=self.tk_annotation_cutoff, length=120,
                   command=self.on_change_annotation_cutoff).pack(side="left")
         self.tk_annotation_cutoff_label = ttk.Label(tk_controls, text=f"{self.tk_annotation_cutoff.get():.2f}", width=4)
@@ -78,14 +91,18 @@ class OverviewPanel(CollapsibleSection):
 
         tk_panel_controls = ttk.Frame(self.body)
         tk_panel_controls.pack(fill="x", pady=(2, 0))
-        ttk.Label(tk_panel_controls, text="Plots:").pack(side="left")
+        tk_plots_label = ttk.Label(tk_panel_controls, text="Plots:")
+        tk_plots_label.pack(side="left")
+        add_tooltip("Plots of the overview. Click an MS2 peak to annotate it (measured spectra: stored in the measured "
+                    "database, library spectra: only for this session).", tk_plots_label)
         for panel, variable in self.tk_show_panels.items():
             ttk.Checkbutton(tk_panel_controls, text=PANEL_LABELS[panel], variable=variable,
                             command=self.redraw).pack(side="left", padx=(6, 0))
-        ttk.Label(tk_panel_controls, foreground="gray", text="(click an MS2 peak to annotate it)").pack(
-            side="left", padx=15)
 
-        self.tk_plot_frame = ttk.Frame(self.body)
+        # small requested size: the plot fills the space it gets, its own request is ignored (matplotlib sets it to
+        # the figure size on high-DPI screens, the section would scroll instead)
+        self.tk_plot_frame = ttk.Frame(self.body, width=200, height=150)
+        self.tk_plot_frame.pack_propagate(False)
         self.tk_plot_frame.pack(fill="both", expand=True)
 
     # ---- requests ---------------------------------------------------------------------------------------------------
@@ -129,6 +146,7 @@ class OverviewPanel(CollapsibleSection):
         self.request_number += 1
         self.shown_key = key
         self.pending = (self.request_number, key, lib_db, match_result, annotations, data, settings)
+        self._show_feature_ids(f_ids)
         if not reuse_data:
             self.app.set_status(f"Plotting {mode} of feature(s) {', '.join(map(str, f_ids))} ...")
         if not self.running:
@@ -220,9 +238,10 @@ class OverviewPanel(CollapsibleSection):
     # ---- canvas -----------------------------------------------------------------------------------------------------
     def _show(self, fig: Figure, title: str):
         """Replace the content of the panel."""
+        had_focus: bool = canvas_has_focus(self.canvas)
         self._destroy_plot()
         self.set_title(title)
-        self.canvas = FigureCanvasTkAgg(fig, master=self.tk_plot_frame)
+        self.canvas = create_canvas(fig, self.tk_plot_frame, focus_canvas=had_focus)
         self.toolbar = NavigationToolbar2Tk(self.canvas, self.tk_plot_frame)
         self.toolbar.update()
         self.toolbar.pack()
@@ -250,10 +269,22 @@ class OverviewPanel(CollapsibleSection):
         self.annotation_cutoff_job = None
         self.redraw()
 
+    def _show_feature_ids(self, f_ids: list[int]):
+        """The feature ID field shows the shown feature(s), unless an ID is being typed."""
+        if focused_widget(self.tk_feature_ids_entry) is self.tk_feature_ids_entry:
+            return
+        self.tk_feature_ids_entry.delete(0, tk.END)
+        self.tk_feature_ids_entry.insert(0, " ".join(map(str, f_ids)))
+
+    def focus_feature_ids(self):
+        """Keyboard focus to the feature ID field, its text selected to type over it."""
+        self.set_expanded(True)
+        self.tk_feature_ids_entry.focus_set()
+        self.tk_feature_ids_entry.select_range(0, tk.END)
+
     def on_submit_feature_ids(self):
-        """Feature ID field: one ID shows that feature, two IDs (separated by , ; or space) compare them."""
-        if self.app.meas_db is None:
-            messagebox.showerror("Error", "Please load a measured database first.")
+        """Feature ID field: one ID selects that feature, two IDs (separated by , ; or space) compare them."""
+        if not self.app.require_meas_db():
             return
         try:
             f_ids = [int(part) for part in re.split(r"[,;\s]+", self.tk_feature_ids_entry.get().strip()) if part]

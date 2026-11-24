@@ -6,6 +6,7 @@ Suggested strategy for making annotations:
     I. only consider compounds that have been reported before
     II. only consider annotations that have a high MS2 similarity score (around 0.7)
     III. only consider annotations that have a decent number of matched MS2 peaks (this depends on the compound and the library, but generally more than 3)
+    IV. You can be more confident about your annotations if they form a series
 2. Adducts: Using the mass difference tool, look for features with other adducts
 3. Connect the dots: Look for features for systematic modifications (e.g., additional isoprenoid units, variations in double bonds, rings), in the m/z vs. RT plot these should roughly form a line.
 4. Expand the search by allowing lower scores: more information is needed to be certain about annotations, try to always relate annotations to already existing ones about which you are sure.

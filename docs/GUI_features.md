@@ -12,7 +12,7 @@ This documentation introduces the main GUI components and demonstrates their fun
 
 The Annotation GUI is divided into several sections, each designed for a specific part of the analysis workflow.
 
-![Main interface of the msIO Annotation GUI](images/main interface.png)
+![Main interface of the msIO Annotation GUI](images/Main%20interface.png)
 
 <p align="center">
   Figure 1. Main interface of the msIO Annotation GUI.
@@ -71,7 +71,7 @@ After configuring the parameters, clicking Find Matches starts the matching proc
 
 After you click on the Finding Parameters, the GUI will display the matches in the 'Results' section.
 
-![Main interface of the msIO Annotation GUI](images/results after matching parameters.png)
+![Main interface of the msIO Annotation GUI](images/results%20after%20matching%20parameters.png)
 
 <p align="center">
         Figure 4. Results section showing the matching paramters.
@@ -111,7 +111,7 @@ The Filters section allows users to narrow down the measured features and potent
 
 </div>
 
-![Main interface of the msIO Annotation GUI](images/available filters.png)
+![Main interface of the msIO Annotation GUI](images/available%20filters.png)
 
 <p align="center">
         Figure 5. Available filters in the Filters section.
@@ -119,7 +119,7 @@ The Filters section allows users to narrow down the measured features and potent
 
 The user can add the filters according to the requirement and the user gets the output on the basis of the filters applied. An example of how the Filter section is shown in the Figure 6 where some of the available filter options (Min MS2 score, Min. #MS2 peak matches, etc.) are used to narrow down to the required compound list.
 
-![Main interface of the msIO Annotation GUI](images/results after filters.png)
+![Main interface of the msIO Annotation GUI](images/results%20after%20filters.png)
 
 <p align="center">
         Figure 6. Results after applying the available filters.
@@ -165,7 +165,7 @@ The row of buttons below the **Results** table acts on the feature currently sel
 | **Add library match** | Accepts the currently displayed library match for the selected feature as its annotation. |
 | **Manage annotations** | Opens an overview of all annotations made so far, where they can be reviewed, edited or removed. |
 
-![Main interface of the msIO Annotation GUI](images/action buttons.png)
+![Main interface of the msIO Annotation GUI](images/action%20buttons.png)
 
 <p align="center">
         Figure 7. Action buttons present below Results section.
@@ -230,7 +230,7 @@ The checkboxes next to **Plots (Figure 8):** switch individual plots on or off:
 | **Intensities** | Intensities across samples |
 | **Structure** | Structure of the library compound |
 
-![Main interface of the msIO Annotation GUI](images/plot 1 features.png)
+![Main interface of the msIO Annotation GUI](images/plot%201%20features.png)
 
 <p align="center">
         Figure 8. Matched overview plot features.
@@ -323,7 +323,7 @@ The user can use the following steps:
 | **Circle matches** | Draws black circles around features that have a library match. |
 | **Min. peak intensity** | Only features above this intensity are drawn (default `100`). Raise it to reduce clutter. |
 
-![Main interface of the msIO Annotation GUI](images/display scatter plot.png)
+![Main interface of the msIO Annotation GUI](images/display%20scatter%20plot.png)
 
 <p align="center">
         Figure 15. Scatter plot.
