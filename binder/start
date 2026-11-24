@@ -1,0 +1,11 @@
+#!/bin/bash
+set -euo pipefail
+
+mkdir -p "$HOME/Desktop"
+
+# Copy desktop files over on container start rather than on postBuild
+# (in JupyterHubs $HOME at build time is not available during runtime)
+cp "$REPO_DIR"/binder/*.desktop "$HOME/Desktop/"
+chmod +x "$HOME"/Desktop/*.desktop
+
+exec "$@"

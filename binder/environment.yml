@@ -1,0 +1,11 @@
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - tk
+  - websockify
+  - pip
+  - pip:
+      - jupyter-remote-desktop-proxy
+      - IsoSpecPy
+      - git+https://github.com/yaza11/LipidCalculator.git
