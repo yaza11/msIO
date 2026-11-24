@@ -9,14 +9,9 @@ msIO main window: all GUIs of msIO.gui as tabs of one window.
 
 Each tab can also be started on its own by running its module.
 """
+# noinspection PyUnresolvedReferences
+import msIO.gui.executable  # noqa: F401  (must stay first)
 import os
-import sys
-
-# a windowed executable (PyInstaller, console=False) has no stdout / stderr, printing would fail
-if sys.stdout is None:
-    sys.stdout = open(os.path.join(os.path.expanduser("~"), "msio_converter.log"), "a", buffering=1)
-if sys.stderr is None:
-    sys.stderr = open(os.path.join(os.path.expanduser("~"), "msio_converter_errors.log"), "a", buffering=1)
 
 import tkinter as tk
 from tkinter import ttk

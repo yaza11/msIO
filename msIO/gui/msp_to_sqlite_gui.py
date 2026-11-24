@@ -1,4 +1,6 @@
 """GUI for converting one or more msp spectral libraries into a SQLite library database."""
+# noinspection PyUnresolvedReferences
+import msIO.gui.executable  # noqa: F401  (must stay first)
 import os
 import threading
 import time
