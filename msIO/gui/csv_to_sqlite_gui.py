@@ -1,5 +1,5 @@
 """Written by Avin Jain"""
-import os
+import msIO.gui.executable
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from typing import cast

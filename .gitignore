@@ -13,3 +13,6 @@ build/
 msIO.egg-info/
 
 idea.drawio
+
+dist/
+*.spec
