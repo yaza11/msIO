@@ -8,6 +8,8 @@ if sys.stdout is None:
 if sys.stderr is None:
     sys.stderr = open(os.path.join(os.path.expanduser("~"), "msio_converter_errors.log"), "a", buffering=1)
 
+import msIO.gui.executable
+
 import tkinter as tk
 
 from msIO.gui.annotation import AnnotationGUI

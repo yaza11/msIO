@@ -14,4 +14,8 @@ msIO.egg-info/
 
 idea.drawio
 
+idea.drawio
+
+dist/
+*.spec
 guaymas/
