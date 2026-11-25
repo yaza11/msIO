@@ -19,7 +19,7 @@ msIO reads mass spectrometry data from several tools, combines it into one SQLit
 Python 3.10 or newer is needed. msIO needs [LipidCalculator](https://github.com/yaza11/LipidCalculator), which is not on PyPI yet and has to be installed first:
 
 ```bash
-pip install git+https://github.com/yaza11/LipidCalculator.git
+pip install git+https://github.com/yaza11/LipidCalculator.git@v0.3.7
 pip install msIO
 ```
 
