@@ -116,8 +116,8 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
     @cached_property
     def mz(self):
         """MetaboScape does not export mz values, so need to calculate mz from M and adduct (:"""
-        from LipidCalculator.rdkit.adduct.parser import get_mz_from_M_and_adduct
-        return get_mz_from_M_and_adduct(self.M, self.adduct)
+        from LipidCalculator import Adduct
+        return Adduct(self.adduct).mass_to_mz(self.M)
 
     @property
     def adduct(self):
@@ -125,22 +125,4 @@ class FeatureMetaboScape(SqlBaseClass, FeatureBaseClass):
 
 
 if __name__ == '__main__':
-    t = FeatureMetaboScape.py_types()
-
-    path_file_csv = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.csv"
-
-    df = pd.read_csv(path_file_csv)
-    ser = df.iloc[0, :]
-
-    f = FeatureMetaboScape.from_dataframe_row(ser, {})
-
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import Session
-    from msIO.features.base import SqlBaseClass
-
-    engine = create_engine("sqlite+pysqlite:///:memory:")
-    SqlBaseClass.metadata.create_all(engine)
-
-    with Session(engine) as session:
-        session.add(f)
-        session.commit()
+    pass

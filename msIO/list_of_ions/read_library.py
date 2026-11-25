@@ -1,5 +1,3 @@
-import io
-
 import pandas as pd
 from tqdm import tqdm
 
@@ -75,5 +73,4 @@ class MetaboLibraryReader(BaseLib):
 
 
 if __name__ == '__main__':
-    path_file = r"C:\Users\yanni\Downloads\archaeol library JSL_2023_v2.library"
-    reader = MetaboLibraryReader(path_file).to_msp()
+    pass

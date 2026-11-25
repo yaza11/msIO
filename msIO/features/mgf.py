@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from typing import Self, Optional
 
 from enum import Enum as PyEnum
@@ -152,9 +151,7 @@ class FeatureMgf(SqlBaseClass, FeatureBaseClass):
                 self.__setattr__(f'ms{level}', adducts[k].peaks)
 
 
-def test():
-    path_mgf_sirius = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.sirius.mgf"
-
+def test(path_mgf_sirius):
     lines_ion = []
     is_ion = False
     with open(path_mgf_sirius, 'r') as f:
@@ -171,9 +168,4 @@ def test():
 
 
 if __name__ == '__main__':
-    # f = test()
-
-    pl = PeakList(mzs=[1, 2, 3], intensities=[3, 4, 5])
-    # spec = MsSpec(mz=100, ms_level=1, charge=1, peaks=pl)
-    #
-    # mgf_feat = FeatureMgf(polarity='pos', ms_specs=[spec])
+    pass

@@ -1,9 +1,7 @@
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
-from itertools import islice
 
-from msIO.environmental.location import Location
 from msIO.features.combined import FeatureCombined
 from msIO.features.metaboscape import FeatureMetaboScape
 from msIO.features.mgf import FeatureMgf, MsSpec
@@ -280,21 +278,4 @@ def composition_msdial(msdial):
 
 
 if __name__ == '__main__':
-    # path_lib = r"C:\Users\Yannick Zander\Downloads\MSMS-Public_experimentspectra-pos-VS19.msp"
-    # MSDialLib = MSPReader(path_lib)
-    # s = MSDialLib.get_ms2(mz=636.53323, mass_tolerance=10e-3)
-
-    # path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
-    # path_file = r"C:\Users\yanni\Downloads\Archlips_Full_spectral_library.msp"
-
-    path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\julius\fragments\1G-AEG_pos.msp"
-
-    # rdr = MSPReader(path_file, low_memory=True)
-    # rdr.read_file()
-
-    rdr = MSPReader(path_file, low_memory=False)
-    # for i in tqdm(range(rdr2.n_features)):
-    #     rdr2.read_next()
-    # print(rdr2.df_features.T)
-
-    f = rdr.create_feature(rdr.df_features.index[0])
+    pass

@@ -31,8 +31,4 @@ class ExportManager:
 
 
 if __name__ == '__main__':
-    # from msIO.feature_managers.main import SIRIUS_FILE_NAMES, get_sirius_file_for_tag
-
-    em = ExportManager(
-        path_metaboscape_folder=r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape'
-    )
+    pass

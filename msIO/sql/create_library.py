@@ -147,7 +147,5 @@ def write_lib_from_msp_files(
 
 if __name__ == '__main__':
     pass
-    # from msIO.feature_managers.db import Library
 
-    # lib = Library(db_file)
 

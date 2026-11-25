@@ -1,8 +1,4 @@
-from sqlalchemy import create_engine, MetaData, text
 import subprocess
-import sys
-import os
-
 
 def dump_schema(db_url: str, output_file: str):
     from sqlalchemy import create_engine, MetaData, text

@@ -5,7 +5,7 @@ Each feature is associated with molecular properties, MS1, MS2, annotations, ...
 """
 from typing import Literal, Iterable, Optional
 
-from sqlalchemy import Integer, ForeignKey
+from sqlalchemy import Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from msIO.features.base import FeatureBaseClass, SqlBaseClass
@@ -140,15 +140,4 @@ def load_database(in_file: str) -> dict[int, FeatureCombinedFlat]:
 
 if __name__ == '__main__':
     pass
-    # path_mgf_sirius = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.sirius.mgf"
-    # path_gnps_folder = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\GNPS"
-    # path_sirius_folder = r'\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\SIRIUS\5.8.1'
-    #
-    # mgf = MgfImportManager(path_mgf_sirius)
-    # gnps = GnpsImportManager(path_gnps_folder=path_gnps_folder)
-    # sr = SiriusImportManager.from_export(path_folder_export=path_sirius_folder, export_tag='all')
 
-    f_gnps = FeatureGnpsNode(feature_id=1, cluster_label=2)
-    # f_gnps = FeatureGnpsNode()
-
-    f = FeatureCombined(gnps=f_gnps)

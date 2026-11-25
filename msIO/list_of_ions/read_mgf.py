@@ -1,14 +1,11 @@
 """
 Read mgf (Mascot Generic Format) files
 
-https://www.matrixscience.com/help/data_file_help.html
+Using specifications from
+    https://www.matrixscience.com/help/data_file_help.html
 """
-from dataclasses import dataclass
-from typing import Literal, Self, Iterable
-
 import numpy as np
 import pandas as pd
-from matplotlib import pyplot as plt
 from tqdm import tqdm
 
 from msIO.feature_managers.base import FeatureManager
@@ -161,20 +158,4 @@ class MgfImportManager(BaseLib, FeatureManager):
 
 
 if __name__ == '__main__':
-    # path_mgf_sirius = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.sirius.mgf"
-    path_mgf = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_new_sirius.mgf"
-
-    unmerged_mgf = MgfImportManager(path_mgf, accumulate_spectra=False)
-    mgf = MgfImportManager(path_mgf, accumulate_spectra=True, mz_resolution=40_000)
-
-    # peak_lists = mgf.get_ms2(mz=636.53379)
-    #
-    # peak_lists[1][1].plot()
-    # plt.show()
-
-    fig, axs = plt.subplots(ncols=2, sharex=True, sharey=True)
-    mgf._peak_dict[(35, 2, np.nan)].plot(ax=axs[0])
-    for i, idx in enumerate([5, 6, 7, 8, 9, 10]):
-        unmerged_mgf.peak_list[idx].plot(ax=axs[1], linefmt=f'C{i}')
-
-    f = mgf.get_feature(1)
+    pass

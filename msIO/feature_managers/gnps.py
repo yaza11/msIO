@@ -72,10 +72,4 @@ class GnpsImportManager(FeatureManager):
 
 
 if __name__ == '__main__':
-    # path_gnps_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\GNPS\gnps.graphml"
-    # gnps = GnpsImportManager(path_file_gnps_graphml=path_gnps_file)
-
-    path_gnps_file2 = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\guaymas_mzmine_networking_new_fbmn.graphml"
-    gnps2 = GnpsImportManager.from_mzmine(path_gnps_file2)
-
-    # f = gnps.get_feature(1)
+    pass

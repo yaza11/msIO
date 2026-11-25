@@ -1,4 +1,4 @@
-from sqlalchemy import Float, String, Boolean, Integer
+from sqlalchemy import Float, String, Boolean
 from sqlalchemy.orm import Mapped, mapped_column
 
 from msIO.features.base import FeatureBaseClass

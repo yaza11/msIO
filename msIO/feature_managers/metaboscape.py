@@ -111,10 +111,4 @@ class MetaboscapeImportManager(FeatureManager):
 
 
 if __name__ == '__main__':
-    # path_file_csv = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\MetabSscape\timsTOF_combined_re.csv"
-    path_file_csv = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas really new method\MetaboScape\and a backup.csv"
-    path_file_clipboard = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas really new method\MetaboScape\from_clipboard.csv"
-
-    mm = MetaboscapeImportManager(path_file_csv, path_file_clipboard)
-
-    f = mm.get_feature(397)
+    pass

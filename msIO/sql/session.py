@@ -29,4 +29,4 @@ def initiate_db(path_file):
 
 
 if __name__ == '__main__':
-    initiate_db(r"C:\Users\Yannick Zander\Nextcloud2\Promotion\msIO\msIO\feature_managers\database.db")
+    pass

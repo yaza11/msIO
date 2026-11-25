@@ -13,7 +13,6 @@ import logging
 from LipidCalculator import Adduct, CompoundDict
 from LipidCalculator.isotopes.isotope_pattern import IsotopePattern
 from LipidCalculator.rdkit.plotting import mplt_mol
-from matchms.filtering import normalize_intensities
 from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
@@ -26,7 +25,6 @@ from msIO.feature_managers.util_library import peaklist_to_spectrum
 from msIO.list_of_ions.base import PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
-from sqlalchemy.orm import load_only
 from sqlalchemy import select, inspect, text, or_, and_, func
 from sqlalchemy.orm import selectinload, joinedload
 
@@ -1304,149 +1302,4 @@ def lib_match_result_to_table(results: dict) -> pd.DataFrame:
 
 
 if __name__ == '__main__':
-    import time
-    # lib_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\compounds\sql\library.sql"
-    # lib_file = r"C:\Users\yanni\Downloads\library_complete.sql"
-    # meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\mzmine\database_all_features_sirius_new.db"
-    # lib_file = r"C:\Users\Yannick Zander\Downloads\library_arch_mp1_msdial_jul.sqlite"
-    meas_file = r"C:\Users\yanni\Nextcloud2\Avin\database_gdgts.sqlite"
-    lib_file = r"C:\Users\yanni\Nextcloud2\Avin\archlipids_high_conf.sqlite"
-
-    # lib_file = r"C:\Users\Yannick Zander\Downloads\library_ipl.sqlite"
-
-    # lib = Library(lib_file)
-
-    # res = lib.find_matches_precursor([883.67777], max_dmz_da=5e-3)
-    # names = [lib.names[f_id] for f_id in res[0]]
-
-    # f_ids = lib.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.001)
-    # for f_id in f_ids:
-    #     lib.plot_compound_overview(f_id)
-    #     plt.show()
-    # lib.compare_compounds([334520, 481732, 686932, 457245, 334430, 334431])
-    # lib.plot_compound_overview(427291)
-    # lib.plot_compound_overview(427275)
-    # lib.plot_compound_overview(427276)
-
-    # meas_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db"
-    #
-    # # target_mzs = [653.68090, 667.69624, 802.74909, 1073.80953] * 100
-    # # target_names = ['Archaeol(20:0_20:0)', 'MeO-Archaeol(20:0_20:0)', 'Rib-Archaeol(20:0_20:0)', 'SQ-Archaeol(25:3_30:5)'] * 100
-    #
-    # logging.basicConfig(level=logging.INFO)
-    #
-    # t0 = time.time()
-    # print('loading library')
-    # lib = Library(lib_file)
-    #
-    # print('loading measurement')
-
-    meas = FeatureManagerDB(meas_file)
-    res = meas.get_f_ids_manual_annotations()
-
-    frag = 373.3676
-    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=.005)
-    nh3_loss = CompoundDict('NH3').mass
-    f_ids = meas.filter_by_neutral_loss(neutral_loss=nh3_loss, mz_tol_da=.005)
-
-    meas.remove_annotation(5835, 24882)
-
-    meas.plot_scatter(add_annotations=True, highlight_features=f_ids)
-    # f_ids_meas = meas.find_matches_precursor([994.8128], 10e-3)
-    #
-    # meas.compare_features(*f_ids_meas[0])
-    #
-    # f_ids = meas.filter_by_fragment_mz(fragment_mz=frag, mz_tol_da=10e-3, min_intensity=0)
-
-    # meas.add_neutral_losses()
-
-    # mzs_meas: dict[int, float] = meas.mzs
-    # ms2_meas = meas.get_ms_spectra(meas.feature_ids, level=2)
-    #
-    # # matches = find_matches(
-    # #     lib,
-    # #     mzs_meas,
-    # #     ms2_spectra=ms2_meas,
-    # #     max_ms2_dmz_da=10e-3,
-    # #     min_ms2_score=.7,
-    # #     max_dmz_mda=5e-3,
-    # #     require_ms2=False
-    # # )
-    # matches: dict[int, list[dict]] = lib.find_matches(
-    #     mzs_meas,
-    #     ms2_spectra=ms2_meas,
-    #     max_ms2_dmz_da=10e-3,
-    #     min_ms2_score=.7,
-    #     max_dmz_mda=5e-3,
-    #     require_ms2=False,
-    #     return_nhits_ms2=True
-    # )
-    # t1 = time.time()
-    #
-    # print(f'finding annotations took {(t1 - t0) / 60:.2f} minutes')
-    #
-    # def plot_matches(f_id_meas):
-    #     matched_anns: list[dict] = matches[f_id_meas]
-    #
-    #     fig, axs = plt.subplots(nrows=len(matched_anns) + 1, ncols=1, sharex=True)
-    #
-    #     ax=axs[0]
-    #     ms2_meas[f_id_meas].plot(ax)
-    #     ax.set_title(f'name MetaboScape: {meas.names_metaboscape[f_id_meas]}')
-    #
-    #     for i, matched_ann in enumerate(matched_anns):
-    #         ax = axs[i+1]
-    #         ms = lib.get_ms_spectrum(matched_ann['feature_id'], level=2)
-    #         if ms is None:
-    #             continue
-    #         ms.plot(ax)
-    #         ax.set_title(f'name: {matched_ann['name']}, ppm: {matched_ann["dmz_ppm"]:.1f}, MS score: {matched_ann["ms2_score"]:.2f}')
-    #     return fig, axs
-    # #
-    # # def to_mca() -> list[MoleculeAnnotation]:
-    # #     ...
-    # #
-    # plt.close()
-    # plot_matches(4719)
-    # plt.show()
-
-
-    # assign certainty levels
-    ...
-
-
-    # from msIO.features.combined import FeatureCombined
-    #
-    # dbm = FeatureManagerDB(r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas new method height recursive\SQL\database.db")
-    #
-    # ints = dbm.get_intensities(feature_id=1)
-    #
-    #
-    # self = dbm
-    # f_id1, f_id2 = 6000, 6050
-    # self.compare_features(f_id1, f_id2)
-    #
-    # spec = dbm.get_ms_spectrum(feature_id=6050, level=2)
-    # spec.plot()
-    #
-    # specs = dbm.get_ms_spectra(feature_ids=list(range(1, 1000)), level=2)
-
-    # Session = dbm.get_active_session()
-    # with Session() as session:
-    #     f = session.query(FeatureCombined).filter(FeatureCombined.feature_id == 1).first()
-    #     print(f.metaboscape.CCS)
-
-    # f = dbm.get_feature(1)
-    # print(f.metaboscape.M, f.metaboscape.adduct, f.metaboscape.mz)
-    #
-    # f_ids = dbm.feature_ids
-    # mzs = dbm.mzs
-    # Ms = dbm.molecular_mass
-    # RTs = dbm.retention_times_in_seconds
-    # CCS = dbm.collisional_cross_sections
-    # F_m = dbm.formula_metaboscape
-    # F_s = dbm.formula_sirius
-
-    # names = dbm.name_sirius
-
-    # t = dbm.get_all_attributes_from(FeatureMetaboScape, 'M_metaboscape')
+    pass

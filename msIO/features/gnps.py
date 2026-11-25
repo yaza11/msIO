@@ -56,10 +56,4 @@ class FeatureGnpsNode(SqlBaseClass, FeatureBaseClass):
 
 
 if __name__ == '__main__':
-    import networkx as nx
-
-    path_file = r"\\hlabstorage.dmz.marum.de\scratch\Yannick\Guaymas\U1545B_U1549B\GNPS\gnps_molecular_network_graphml\0315b5f68fc74173b4f18a6906a0c1f9.graphml"
-
-    G: nx.Graph = nx.read_graphml(path_file)
-    fs = list(G.nodes.data())
-    f = FeatureGnpsNode.from_graphml(fs[0])
+    pass

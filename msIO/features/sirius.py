@@ -225,4 +225,4 @@ class FeatureSirius(SqlBaseClass, FeatureBaseClass):
 
 if __name__ == '__main__':
     pass
-    f = FeatureSirius()
+
