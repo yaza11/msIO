@@ -46,3 +46,8 @@ class Sample(SqlBaseClass):
                                                           cascade="all, delete-orphan",
                                                           passive_deletes=True)
 
+
+# Sample.location refers to "Location" by name: SQLAlchemy can only resolve it if location.py was imported. Imported
+# here (after Sample, location.py imports Sample) so that using Sample is enough, an unused-looking import elsewhere
+# must not be the only thing keeping the mapper configurable.
+from msIO.environmental.location import Location  # noqa: E402,F401
