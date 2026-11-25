@@ -1,3 +1,4 @@
+
 name: Build Windows executables
 
 on:
@@ -14,18 +15,14 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: msIO_AnnotationGUI
-            script: msIO/gui/find_lib_matches.py
-          - name: msIO_LibrarySearch
-            script: msIO/gui/library_search_by_name.py
-          - name: msIO_CSVtoSQLite
-            script: msIO/gui/csv_to_sqlite_gui.py
           - name: msIO_GUI
             script: msIO/gui/main.py
+
     steps:
       - uses: actions/checkout@v4
 
@@ -44,6 +41,7 @@ jobs:
         run: |
           $sp = python -c "import site; print(site.getsitepackages()[0])"
           $dll = Get-ChildItem -Path $sp -Recurse -Filter "IsoSpecCppPy.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
+
           if ($dll) {
             Write-Host "Found $($dll.FullName)"
             "ISO_DLL=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
@@ -54,29 +52,62 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: |
-          $piArgs = @("--noconfirm", "--clean", "--onedir", "--windowed",
-                      "--name", "${{ matrix.name }}", "--paths", ".",
-                      "--runtime-hook", "msIO/gui/_gui_log.py",
-                      "--collect-all", "matchms",
-                      "--collect-all", "LipidCalculator",
-                      "--collect-all", "IsoSpecPy",
-                      "--hidden-import", "scipy._external.array_api_compat.numpy.fft")
-          if ($env:ISO_DLL) { $piArgs += @("--add-binary", "$($env:ISO_DLL);bin") }
+          $piArgs = @(
+            "--noconfirm", "--clean", "--onedir", "--windowed",
+            "--name", "${{ matrix.name }}", "--paths", ".",
+            "--runtime-hook", "msIO/gui/_gui_log.py",
+            "--collect-all", "matchms",
+            "--collect-all", "LipidCalculator",
+            "--collect-all", "IsoSpecPy",
+            "--hidden-import", "scipy._external.array_api_compat.numpy.fft"
+          )
+
+          if ($env:ISO_DLL) {
+            $piArgs += @("--add-binary", "$($env:ISO_DLL);bin")
+          }
+
           $piArgs += "${{ matrix.script }}"
+
           python -m PyInstaller @piArgs
 
-      - uses: actions/upload-artifact@v4
+      - name: Zip build for release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path "dist/${{ matrix.name }}" `
+            -DestinationPath "${{ matrix.name }}-windows.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.name }}
           path: dist/${{ matrix.name }}
           if-no-files-found: error
 
-      - name: Zip build for release
+      - name: Upload release ZIP
         if: startsWith(github.ref, 'refs/tags/')
-        shell: pwsh
-        run: Compress-Archive -Path "dist/${{ matrix.name }}" -DestinationPath "${{ matrix.name }}-windows.zip"
-
-      - uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
         with:
-          files: ${{ matrix.name }}-windows.zip
+          name: release-${{ matrix.name }}
+          path: ${{ matrix.name }}-windows.zip
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release ZIPs
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: release-assets/*.zip
+          generate_release_notes: true
