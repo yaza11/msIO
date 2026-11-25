@@ -6,7 +6,7 @@ tqdm, logging and tracebacks of exceptions in tk callbacks would fail ("'NoneTyp
 or vanish. Both streams are redirected to a log file in the user's home directory (devnull if that is not writable).
 
 Used in two ways:
-    - as PyInstaller runtime hook (--runtime-hook msIO/gui/executable.py), runs before any other import in the exe
+    - as PyInstaller runtime hook (--runtime-hook msIO/gui/_gui_log.py), runs before any other import in the exe
     - imported first by every GUI entry module, covers pythonw and running the modules without PyInstaller
 
 Only uses the standard library and is idempotent, so running it twice does no harm.

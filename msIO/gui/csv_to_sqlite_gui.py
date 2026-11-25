@@ -4,7 +4,7 @@ results into a SQLite database.
 Originally written by Avin Jain.
 """
 # noinspection PyUnresolvedReferences
-import msIO.gui.executable  # noqa: F401  (must stay first)
+import msIO.gui._gui_log  # noqa: F401  (must stay first)
 import glob
 import os
 import threading

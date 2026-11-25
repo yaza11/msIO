@@ -10,7 +10,7 @@ msIO main window: all GUIs of msIO.gui as tabs of one window.
 Each tab can also be started on its own by running its module.
 """
 # noinspection PyUnresolvedReferences
-import msIO.gui.executable  # noqa: F401  (must stay first)
+import msIO.gui._gui_log  # noqa: F401  (must stay first)
 import os
 
 import tkinter as tk

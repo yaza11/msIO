@@ -1,5 +1,5 @@
 # noinspection PyUnresolvedReferences
-import msIO.gui.executable  # noqa: F401  (must stay first)
+import msIO.gui._gui_log  # noqa: F401  (must stay first)
 import tkinter as tk
 from tkinter import filedialog, messagebox
 
