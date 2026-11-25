@@ -5,3 +5,7 @@ xubuntu-icon-theme
 
 # Desktop environment so people can navigate
 xfce4
+
+# VNC server for jupyter-remote-desktop-proxy
+tigervnc-standalone-server
+tigervnc-xorg-extension
