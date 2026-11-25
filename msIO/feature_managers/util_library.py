@@ -1,6 +1,5 @@
 import numpy as np
 from matchms import Spectrum
-from matchms.similarity import ModifiedCosineGreedy
 
 from msIO import PeakList
 

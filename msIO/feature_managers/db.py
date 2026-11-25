@@ -13,7 +13,6 @@ import logging
 from LipidCalculator import Adduct, CompoundDict
 from LipidCalculator.isotopes.isotope_pattern import IsotopePattern
 from LipidCalculator.rdkit.plotting import mplt_mol
-from matchms.similarity import ModifiedCosineGreedy
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
 from rdkit import Chem
@@ -21,7 +20,6 @@ from tqdm import tqdm
 
 from msIO import PeakList
 from msIO.environmental.sample import Sample
-from msIO.feature_managers.util_library import peaklist_to_spectrum
 from msIO.list_of_ions.base import PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
@@ -1021,6 +1019,11 @@ class Library(FeatureManagerDB):
             elif metric == 'cosine_backward':
                 metric = cosine_similarity_backward
             elif metric == 'modified_cosine_greedy':
+                # imported here: importing matchms takes ~5 s (it loads all its similarity modules), which would
+                # otherwise delay the start of every GUI
+                from matchms.similarity import ModifiedCosineGreedy
+                from msIO.feature_managers.util_library import peaklist_to_spectrum
+
                 # need to convert to matchms SpectrumType, each spectrum only once (a measured spectrum is
                 # compared to all its library matches, a library spectrum to all measured features it matches)
                 matchms_spectra: dict[int, Any] = {}
