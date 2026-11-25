@@ -31,8 +31,8 @@ setup(
     python_requires='>=3.10',
     # only msIO, not the local folders next to it (testing, ...)
     packages=find_packages(include=['msIO', 'msIO.*']),
-    # non-Python files used at runtime: the guide shown in the GUI, the SQL schema
-    package_data={'msIO.gui': ['about'], 'msIO.sql': ['*.sql']},
+    # non-Python files used at runtime: the guide shown in the GUI
+    package_data={'msIO.gui': ['about']},
     install_requires=['numpy', 'matplotlib', 'pandas', 'tqdm', 'sqlalchemy', 'networkx', 'matchms', 'rdkit'],
 )
 

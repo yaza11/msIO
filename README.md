@@ -16,18 +16,16 @@ msIO reads mass spectrometry data from several tools, combines it into one SQLit
 
 ## Installation
 
-Python 3.10 or newer is needed.
+Python 3.10 or newer is needed. msIO needs [LipidCalculator](https://github.com/yaza11/LipidCalculator), which is not on PyPI yet and has to be installed first:
 
 ```bash
 pip install git+https://github.com/yaza11/LipidCalculator.git
-pip install git+https://github.com/yaza11/msIO.git
+pip install msIO
 ```
 
-`setup.py` installs `numpy`, `matplotlib`, `pandas`, `tqdm`, `sqlalchemy`, `networkx` and `matchms`. A few modules also need `rdkit` and `pint`, which `setup.py` does not install:
+The latest development version can be installed from GitHub with `pip install git+https://github.com/yaza11/msIO.git` instead.
 
-```bash
-pip install rdkit pint
-```
+For Windows, there is also a standalone GUI that needs no Python installation: download `msIO_GUI-windows.zip` from the [releases](https://github.com/yaza11/msIO/releases), extract it and run `msIO_GUI.exe`.
 
 ## Graphical user interface
 
@@ -53,13 +51,13 @@ You can also run each tab on its own by running its module in `msIO/gui/`.
 
 ### Standalone executable
 
-To build a Windows executable (no Python needed to run it) with PyInstaller:
+Ready-built Windows executables are attached to the [releases](https://github.com/yaza11/msIO/releases). To build one yourself (no Python needed to run it), install PyInstaller in the environment where msIO and its dependencies are installed and run:
 
 ```bash
-pyinstaller LipidAnnotations.spec
+pyinstaller --noconfirm --clean LipidAnnotations.spec
 ```
 
-The build goes to `dist/LipidAnnotations/`.
+The build goes to `dist/msIO_GUI/`. The GitHub workflow builds the releases from the same spec file.
 
 ## Python usage
 

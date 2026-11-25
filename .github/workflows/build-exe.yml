@@ -1,5 +1,5 @@
 
-name: Build Windows executables
+name: Build and release
 
 on:
   push:
@@ -13,6 +13,39 @@ permissions:
   contents: write
 
 jobs:
+  # Python package (sdist + wheel) for PyPI, built on every run so packaging errors show up early
+  dist:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check that the tag matches msIO/_version.py
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          version=$(python -c "import runpy; print(runpy.run_path('msIO/_version.py')['__version__'])")
+          if [ "v$version" != "${GITHUB_REF_NAME}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match version $version in msIO/_version.py"
+            exit 1
+          fi
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --upgrade pip build twine
+          python -m build
+          python -m twine check --strict dist/*
+
+      - name: Upload Python package
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+          if-no-files-found: error
+
   build:
     runs-on: windows-latest
 
@@ -20,8 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: msIO_GUI
-            script: msIO/gui/main.py
+          - name: msIO_GUI  # must match NAME in LipidAnnotations.spec
 
     steps:
       - uses: actions/checkout@v4
@@ -36,39 +68,9 @@ jobs:
           pip install . pyinstaller IsoSpecPy
           pip install git+https://github.com/yaza11/LipidCalculator.git
 
-      - name: Locate IsoSpec DLL
-        shell: pwsh
-        run: |
-          $sp = python -c "import site; print(site.getsitepackages()[0])"
-          $dll = Get-ChildItem -Path $sp -Recurse -Filter "IsoSpecCppPy.dll" -ErrorAction SilentlyContinue | Select-Object -First 1
-
-          if ($dll) {
-            Write-Host "Found $($dll.FullName)"
-            "ISO_DLL=$($dll.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          } else {
-            Write-Host "IsoSpecCppPy.dll not found, building without it"
-          }
-
+      # all build options (data files, IsoSpec library, runtime hook, ...) are in the spec, shared with local builds
       - name: Build executable
-        shell: pwsh
-        run: |
-          $piArgs = @(
-            "--noconfirm", "--clean", "--onedir", "--windowed",
-            "--name", "${{ matrix.name }}", "--paths", ".",
-            "--runtime-hook", "msIO/gui/_gui_log.py",
-            "--collect-all", "matchms",
-            "--collect-all", "LipidCalculator",
-            "--collect-all", "IsoSpecPy",
-            "--hidden-import", "scipy._external.array_api_compat.numpy.fft"
-          )
-
-          if ($env:ISO_DLL) {
-            $piArgs += @("--add-binary", "$($env:ISO_DLL);bin")
-          }
-
-          $piArgs += "${{ matrix.script }}"
-
-          python -m PyInstaller @piArgs
+        run: python -m PyInstaller --noconfirm --clean LipidAnnotations.spec
 
       - name: Zip build for release
         if: startsWith(github.ref, 'refs/tags/')
@@ -94,7 +96,7 @@ jobs:
           if-no-files-found: error
 
   release:
-    needs: build
+    needs: [dist, build]
     if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
 
@@ -111,3 +113,26 @@ jobs:
         with:
           files: release-assets/*.zip
           generate_release_notes: true
+
+  # Upload to PyPI via trusted publishing (no token needed). Needs a (pending) publisher on pypi.org for
+  # repository yaza11/msIO, workflow build-exe.yml and environment "pypi". Only after the exe built, so a
+  # release is published everywhere or nowhere; PyPI never accepts the same version twice.
+  pypi:
+    needs: [dist, build]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/msIO
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Download Python package
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
