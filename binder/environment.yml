@@ -8,4 +8,4 @@ dependencies:
   - pip:
       - jupyter-remote-desktop-proxy
       - IsoSpecPy
-      - git+https://github.com/yaza11/LipidCalculator.git
+      - - git+https://github.com/yaza11/LipidCalculator.git@v0.3.7
