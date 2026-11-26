@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 from msIO.feature_managers.base import FeatureManager
-from msIO.features.metaboscape import FeatureMetaboScape, METABOSCAPE_CSV_RENAME_COLUMNS
+from msIO.features.metaboscape import FeatureMetaboScape, METABOSCAPE_CSV_RENAME_COLUMNS, mz_from_mass
 from msIO.environmental.sample import Sample
 
 # MZmine full feature table column -> attribute of FeatureMetaboScape
@@ -46,6 +46,11 @@ class MetaboscapeImportManager(FeatureManager):
 
         if path_metaboscape_clipboard_file is not None:
             self._add_from_clipboard(path_metaboscape_clipboard_file)
+
+        # the CSV export has no "m/z meas." (only the clipboard export), PEPMASS is the neutral mass
+        if 'mz_meas' not in self._df.columns and {'M_metaboscape', 'adduct_metaboscape'} <= set(self._df.columns):
+            self._df['mz_meas'] = [mz_from_mass(M, adduct) for M, adduct
+                                   in zip(self._df.M_metaboscape, self._df.adduct_metaboscape)]
 
         self._sample_name_to_sample: dict[str, Sample] = {}
 

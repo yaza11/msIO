@@ -20,14 +20,14 @@ from tqdm import tqdm
 
 from msIO import PeakList
 from msIO.environmental.sample import Sample
-from msIO.list_of_ions.base import PeakFeature
+from msIO.list_of_ions.base import LoadedPeakList, PeakFeature
 from msIO.metrics import cosine_similarity_sym, cosine_similarity_forward, cosine_similarity_backward
 from msIO.sql.session import get_sessionmaker
 from sqlalchemy import select, inspect, text, or_, and_, func
 from sqlalchemy.orm import selectinload, joinedload
 
 # need to import so that sqlalchemy knows about relationships
-from msIO.features.metaboscape import FeatureMetaboScape, Intensity
+from msIO.features.metaboscape import FeatureMetaboScape, Intensity, mz_from_mass
 from msIO.features.mgf import FeatureMgf, MsSpec
 from msIO.features.sirius import CompoundCandidate, FormulaCandidate, FeatureSirius
 from msIO.features.combined import FeatureCombined
@@ -167,7 +167,14 @@ class FeatureManagerDB:
 
     @cached_property
     def mzs(self) -> dict[int, float]:
-        return self._get_dict_for_attributes(FeatureMetaboScape, 'mz_meas')
+        mzs: dict[int, float] = self._get_dict_for_attributes(FeatureMetaboScape, 'mz_meas')
+        if any(mz is None for mz in mzs.values()):
+            # databases from a MetaboScape CSV export without "m/z meas.": m/z from the neutral mass and adduct
+            masses: dict[int, float] = self._get_dict_for_attributes(FeatureMetaboScape, 'M_metaboscape')
+            adducts: dict[int, str] = self._get_dict_for_attributes(FeatureMetaboScape, 'adduct_metaboscape')
+            mzs = {f_id: mz if mz is not None else mz_from_mass(masses.get(f_id), adducts.get(f_id))
+                   for f_id, mz in mzs.items()}
+        return mzs
 
     def get_missing_indexes(self) -> dict[str, tuple[str, str]]:
         """
@@ -469,7 +476,8 @@ class FeatureManagerDB:
             for feature_id, peaks in groupby(rows, key=lambda row: row[0]):
                 peaks = [peak for peak in peaks if peak[1] is not None]  # empty spectrum: one row without peak
                 _, mzs, intensities, annotations = zip(*peaks) if peaks else ((), (), (), ())
-                spectra[feature_id] = PeakList(mzs=mzs, intensities=intensities, annotations=annotations)
+                # not PeakList: its SQLAlchemy peak objects need ~3 kB each (GBs for measurements with many peaks)
+                spectra[feature_id] = LoadedPeakList(mzs=mzs, intensities=intensities, annotations=annotations)
         return spectra
 
     def get_ms_spectra(

@@ -220,6 +220,52 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
         return ax
 
 
+class LoadedPeak:
+    """Peak of a spectrum loaded from a database (see LoadedPeakList), the annotation can be changed."""
+    __slots__ = ('mz', 'intensity', 'annotation')
+
+    def __init__(self, mz: float, intensity: float, annotation: str | None = None):
+        self.mz = mz
+        self.intensity = intensity
+        self.annotation = annotation
+
+
+class LoadedPeakList:
+    """
+    Spectrum loaded from a database for reading, with the interface of PeakList (peaks, mzs, intensities,
+    annotations, filter, plot) but without SQLAlchemy objects: those take about 3 kB per peak, too much for
+    measurements with millions of MS2 peaks. Convert to a PeakList to write it to a database.
+    """
+    __slots__ = ('peaks', 'name')
+
+    def __init__(
+            self,
+            mzs: Optional[Iterable[float]] = None,
+            intensities: Optional[Iterable[float]] = None,
+            annotations: Optional[Iterable[str]] = None,
+            peaks: Optional[Iterable] = None,
+            name: Optional[str] = None
+    ) -> None:
+        self.name = name
+        if peaks is not None:
+            self.peaks = [LoadedPeak(p.mz, p.intensity, p.annotation) for p in peaks]
+            return
+        mzs, intensities = list(mzs or ()), list(intensities or ())
+        assert len(mzs) == len(intensities)
+        annotations = list(annotations) if annotations is not None else [None] * len(mzs)
+        assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
+        self.peaks = [LoadedPeak(mz, i, a) for mz, i, a in zip(mzs, intensities, annotations)]
+
+    mzs = PeakList.mzs
+    intensities = PeakList.intensities
+    annotations = PeakList.annotations
+    filter = PeakList.filter
+    plot = PeakList.plot
+
+    def to_peak_list(self) -> PeakList:
+        return PeakList(mzs=self.mzs, intensities=self.intensities, annotations=self.annotations, name=self.name)
+
+
 class BaseLib:
     df_features: pd.DataFrame = None
     peak_list: list[PeakList] = None

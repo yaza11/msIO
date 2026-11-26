@@ -28,6 +28,20 @@ METABOSCAPE_CSV_RENAME_COLUMNS: dict[str, str] = {
 }
 
 
+def mz_from_mass(M: float | None, adduct: str | None) -> float | None:
+    """
+    m/z of a feature from its neutral mass and adduct (e.g. "ION=[M+H]+" as in the MetaboScape export), None if one of
+    them is missing or the adduct can't be parsed.
+    """
+    from LipidCalculator import Adduct
+    if M is None or M != M or not isinstance(adduct, str) or not adduct.strip():  # M != M: NaN
+        return None
+    try:
+        return float(Adduct(adduct.strip()).mass_to_mz(float(M)))
+    except Exception:
+        return None
+
+
 class Intensity(SqlBaseClass, FeatureBaseClass):
     __tablename__ = "intensities"
 
