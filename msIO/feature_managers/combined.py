@@ -12,6 +12,7 @@ from msIO.feature_managers.metaboscape import MetaboscapeImportManager
 from msIO.feature_managers.sirius import SiriusImportManager
 from msIO.features.base import SqlBaseClass
 from msIO.features.combined import FeatureCombined, FeatureCombinedFlat
+from msIO.list_of_ions.base import insert_pending_peaks
 
 
 class ProjectImportManager(FeatureManager):
@@ -77,15 +78,28 @@ class ProjectImportManager(FeatureManager):
 
         Session = get_sessionmaker(db_file)
 
-        with Session() as session:
-            for f_id in tqdm(feature_ids, desc='adding features to DB', total=len(feature_ids)):
-                # features = [m.get_feature(f_id) for m in self.active_managers.values() if f_id in m.feature_ids]
-                # for f in features:
-                #     # print(f'adding {f.__class__.__name__} to session')
-                #     session.add(f)
-                f = self.get_feature(f_id)
-                session.add(f)
-            session.commit()
+        # the MGF peaks (millions for measurements) are not built as ORM objects but inserted in bulk
+        mgf: MgfImportManager | None = self._mgf_manager
+        if mgf is not None:
+            # features cached before have ORM peaks, the new ones get empty peak lists with pending peaks
+            mgf.defer_peaks = True
+        try:
+            with Session() as session:
+                features = []
+                for f_id in tqdm(feature_ids, desc='adding features to DB', total=len(feature_ids)):
+                    f = self.get_feature(f_id)
+                    session.add(f)
+                    features.append(f)
+                session.flush()  # assigns the ids of the peak lists
+                insert_pending_peaks(session, (ms_spec.peaks for f in features if f.mgf is not None
+                                               for ms_spec in f.mgf.ms_specs if ms_spec.peaks is not None))
+                session.commit()
+        finally:
+            if mgf is not None:
+                mgf.defer_peaks = False
+                # the cached features have empty peak lists now, build them again when needed
+                mgf.clear_cache()
+                self.clear_cache()
 
 
 def write_table(project_import_manager: ProjectImportManager) -> tuple[pd.DataFrame, pd.DataFrame, dict]:

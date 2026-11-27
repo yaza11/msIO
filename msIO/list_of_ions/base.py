@@ -261,9 +261,44 @@ class LoadedPeakList:
     annotations = PeakList.annotations
     filter = PeakList.filter
     plot = PeakList.plot
+    from_lines = classmethod(PeakList.from_lines.__func__)
+
+    def merge_with(self, other: 'LoadedPeakList', mz_resolution: int) -> 'LoadedPeakList':
+        """As PeakList.merge_with: peaks of both merged to the resolution, names and annotations are lost."""
+        mzs, intensities = recursively_merge_peaks_to_resolution(
+            self.mzs + other.mzs, self.intensities + other.intensities, resolution=mz_resolution)
+        return self.__class__(mzs=mzs, intensities=intensities)
 
     def to_peak_list(self) -> PeakList:
         return PeakList(mzs=self.mzs, intensities=self.intensities, annotations=self.annotations, name=self.name)
+
+
+def insert_pending_peaks(session, peak_lists: Iterable[PeakList], chunk_size: int = 200_000) -> int:
+    """
+    Insert the peaks of peak lists that hold them in pending_peaks (a LoadedPeakList, see
+    MgfImportManager.defer_peaks) with SQLAlchemy core: much faster than one ORM object per peak. The peak lists must
+    have their ids, i.e. the session must be flushed. Returns the number of inserted peaks.
+    """
+    from sqlalchemy import insert
+
+    rows: list[dict] = []
+    n_inserted: int = 0
+    for peak_list in peak_lists:
+        pending: LoadedPeakList | None = peak_list.__dict__.pop('pending_peaks', None)
+        if pending is None:
+            continue
+        assert peak_list.id is not None, 'flush the session before inserting the peaks'
+        # in the order of the spectrum: spectra are loaded ordered by peak id
+        rows.extend({'peak_list_id': peak_list.id, 'mz': p.mz, 'intensity': p.intensity, 'annotation': p.annotation}
+                    for p in pending.peaks)
+        if len(rows) >= chunk_size:
+            session.execute(insert(PeakFeature.__table__), rows)
+            n_inserted += len(rows)
+            rows = []
+    if rows:
+        session.execute(insert(PeakFeature.__table__), rows)
+        n_inserted += len(rows)
+    return n_inserted
 
 
 class BaseLib:

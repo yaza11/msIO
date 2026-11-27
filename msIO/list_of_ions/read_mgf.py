@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from msIO.feature_managers.base import FeatureManager
 from msIO.features.mgf import parse_ion_props, FeatureMgf, MsSpec
-from msIO.list_of_ions.base import BaseLib, PeakList
+from msIO.list_of_ions.base import BaseLib, LoadedPeakList, PeakList
 
 import logging
 
@@ -23,7 +23,14 @@ def ignore_line(line: str) -> bool:
 
 
 class MgfImportManager(BaseLib, FeatureManager):
-    """create dict of features to spectra by parsing an mgf file"""
+    """
+    create dict of features to spectra by parsing an mgf file
+
+    The spectra are kept as LoadedPeakList (no SQLAlchemy objects, those take long to create and much memory for
+    millions of peaks). The features (get_feature) have PeakList spectra, unless defer_peaks is set: then their peak
+    lists are empty and hold the peaks in pending_peaks, to be inserted in bulk (see insert_pending_peaks).
+    """
+    defer_peaks: bool = False
 
     @property
     def feature_ids(self) -> np.ndarray:
@@ -36,7 +43,7 @@ class MgfImportManager(BaseLib, FeatureManager):
         filter_ms1_spectra: if this is set to True,
         """
 
-        self.peak_list: list[PeakList] = []
+        self.peak_list: list[LoadedPeakList] = []
         _feature_ids: list[int] = []
         _ms_level: list[int] = []
         _ions: list[str] = []
@@ -56,7 +63,7 @@ class MgfImportManager(BaseLib, FeatureManager):
                     is_ion = True
                 elif line.startswith('END IONS'):
                     feature_props: dict = parse_ion_props(lines_ion)
-                    peak_list = PeakList.from_lines(lines_ion)
+                    peak_list = LoadedPeakList.from_lines(lines_ion)
                     self.peak_list.append(peak_list)
                     entries.append(feature_props)
                     _feature_ids.append(int(feature_props['feature_id']))
@@ -87,11 +94,11 @@ class MgfImportManager(BaseLib, FeatureManager):
             ms_spec_keys = [tuple(row) for _, row in self.df_features.loc[:, ['feature_id', 'ms_level', 'ion']].iterrows()]
             unique_ms_spec_keys = set(ms_spec_keys)
 
-            peak_lists_merged: list[PeakList] = []
+            peak_lists_merged: list[LoadedPeakList] = []
             for ms_spec_key in tqdm(unique_ms_spec_keys, desc='merging spectra', total=len(unique_ms_spec_keys)):
                 peak_lists = [pl for k, pl in zip(ms_spec_keys, self.peak_list) if k == ms_spec_key]
                 # merge
-                pl_merged: PeakList = peak_lists[0]
+                pl_merged: LoadedPeakList = peak_lists[0]
                 for pl in peak_lists[1:]:
                     pl_merged = pl_merged.merge_with(pl, mz_resolution=mz_resolution)
                 peak_lists_merged.append(pl_merged)
@@ -99,7 +106,7 @@ class MgfImportManager(BaseLib, FeatureManager):
             # some columns will no longer have the correct values but they are not relevant for the MgfFeatures anyway
             self.df_features.drop_duplicates(subset=['feature_id', 'ms_level', 'ion'], inplace=True)
 
-            self._peak_dict: dict[tuple[int, int, str], PeakList] = dict(zip(
+            self._peak_dict: dict[tuple[int, int, str], LoadedPeakList] = dict(zip(
                 unique_ms_spec_keys,
                 self.peak_list)
             )
@@ -110,7 +117,7 @@ class MgfImportManager(BaseLib, FeatureManager):
                     'accumulate_spectra=True'
                 )
 
-            self._peak_dict: dict[tuple[int, int, str], PeakList] = dict(zip(
+            self._peak_dict: dict[tuple[int, int, str], LoadedPeakList] = dict(zip(
                 zip(_feature_ids, _ms_level, _ions),
                 self.peak_list)
             )
@@ -129,7 +136,7 @@ class MgfImportManager(BaseLib, FeatureManager):
             key = row.feature_id, row.ms_level, row.ion
             if key not in self._peak_dict:
                 continue
-            peaks = self._peak_dict[key]
+            peaks = self._peak_list_for_feature(self._peak_dict[key])
             props = row.to_dict()
             props.pop('polarity', None)
             props.pop('feature_id')
@@ -141,6 +148,13 @@ class MgfImportManager(BaseLib, FeatureManager):
             ms_specs=ms_specs
         )
         self._features[f_id] = f
+
+    def _peak_list_for_feature(self, spectrum: LoadedPeakList) -> PeakList:
+        if not self.defer_peaks:
+            return spectrum.to_peak_list()
+        peak_list = PeakList(name=spectrum.name)
+        peak_list.pending_peaks = spectrum  # not mapped, inserted by insert_pending_peaks
+        return peak_list
 
     def get_ms2(
             self,
