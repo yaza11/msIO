@@ -22,87 +22,12 @@ class SpectrumType(PyEnum):
     mass_over_charge_fragments = "mass_over_charge_fragments"
 
 
-class PeakFeature(SqlBaseClass, PeakBaseClass):
-    __tablename__ = "peak"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-
-    # indexed: loading the peaks of spectra joins on it (huge speed up for large libraries)
-    peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"), index=True)
-    peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")  # every peak is part of a peak list
-
-
-class PeakList(SqlBaseClass, FeatureBaseClass):
-    """parse list of ions to create spectrum"""
-    __tablename__ = "peak_list"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-
-    spectrum_type: Mapped[SpectrumType | None] = mapped_column(
-        Enum(SpectrumType, name='spectrum_type_enum'),
-        nullable=True
-    )
-
-    peaks: Mapped[list["PeakFeature"]] = relationship(
-        back_populates="peak_list",
-        cascade="all, delete-orphan"
-    )
-
-    def __init__(
-            self,
-            mzs: Optional[Iterable[float]] = None,
-            intensities: Optional[Iterable[float]] = None,
-            annotations: Optional[Iterable[float]] = None,
-            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None,
-            name: Optional[str] = None
-    ) -> None:
-        self.name = name
-        self.peaks = self._build_peaks(mzs=mzs, intensities=intensities, annotations=annotations, peaks=peaks)
-
-    def merge_to_resolution(self, mz_resolution) -> None:
-        mzs_merged, intensities_merged = recursively_merge_peaks_to_resolution(self.mzs, self.intensities, resolution=mz_resolution)
-        self.peaks = [PeakFeature(mz=mz, intensity=intensity) for mz, intensity in zip(mzs_merged, intensities_merged)]
-
-    def merge_with(self, other: Self, mz_resolution: int) -> Self:
-        """Return new instance where intensities of the peaks are merged. Information about id, names and peak annotations are lost"""
-        # create peak list that includes peaks from both peak lists
-        peaks = self.peaks + other.peaks
-        # new instance of self
-        new = self.__class__(peaks=peaks)
-        # merge peaks below resolution
-        new.merge_to_resolution(mz_resolution)
-        return new
-
-    def _build_peaks(
-            self,
-            mzs: Optional[Iterable[float]],
-            intensities: Optional[Iterable[float]],
-            annotations: Optional[Iterable[str]],
-            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]]
-    ) -> list[PeakFeature]:
-        if (mzs is None) and (intensities is None) and (peaks is None):
-            return []
-
-        if peaks is None:
-            assert (mzs is not None) and (intensities is not None), \
-                'provide either peaks OR (mzs AND intensities)'
-            assert len(mzs) == len(intensities)
-            if annotations is not None:
-                assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
-            else:
-                annotations = [None] * len(mzs)
-            # peak_list is set when the peaks are assigned to self.peaks (back_populates), setting it here as
-            # well would fire the relationship events twice per peak
-            return [PeakFeature(mz=mz, intensity=i, annotation=a) for mz, i, a in zip(mzs, intensities, annotations)]
-
-        assert (mzs is None) and (intensities is None), 'provide either peaks OR (mzs AND intensities)'
-        if isinstance(peaks, dict):
-            return [PeakFeature(mz=k, intensity=v, peak_list=self) for k, v in peaks.items()]
-        return [p
-                if p.peak_list is self
-                else PeakFeature(mz=p.mz, intensity=p.intensity, peak_list=self)
-                for p in peaks]
+class PeakListMixin:
+    """
+    Functionality shared by PeakList (SQLAlchemy, for writing) and LoadedPeakList (plain objects, for reading).
+    Only uses self.peaks (objects with mz, intensity and annotation), self.name and the constructor of the class.
+    """
+    __slots__ = ()
 
     @property
     def mzs(self) -> list[float]:
@@ -116,17 +41,11 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
     def annotations(self) -> list[str]:
         return [p.annotation for p in self.peaks]
 
-    def __add__(self, other: Self) -> Self:
-        new_peaks = self.peaks.copy()
-        mzs = self.mzs
-        for p in other.peaks:
-            mz = p.mz
-            i = p.intensity
-            if mz not in mzs:
-                new_peaks.append(PeakFeature(mz=mz, intensity=0.))
-            idx = mzs.index(mz)
-            new_peaks[idx].intensity += i
-        return self.__class__(peaks=new_peaks)
+    def merge_with(self, other: Self, mz_resolution: int) -> Self:
+        """Return new instance where intensities of the peaks are merged. Information about id, names and peak annotations are lost"""
+        mzs, intensities = recursively_merge_peaks_to_resolution(
+            self.mzs + other.mzs, self.intensities + other.intensities, resolution=mz_resolution)
+        return self.__class__(mzs=mzs, intensities=intensities)
 
     @classmethod
     def from_lines(cls, inpt: list[str], splitter=' ', name: Optional[str] = None) -> Self:
@@ -220,6 +139,91 @@ class PeakList(SqlBaseClass, FeatureBaseClass):
         return ax
 
 
+class PeakFeature(SqlBaseClass, PeakBaseClass):
+    __tablename__ = "peak"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # indexed: loading the peaks of spectra joins on it (huge speed up for large libraries)
+    peak_list_id: Mapped[int] = mapped_column(ForeignKey("peak_list.id"), index=True)
+    peak_list: Mapped["PeakList"] = relationship(back_populates="peaks")  # every peak is part of a peak list
+
+
+class PeakList(SqlBaseClass, FeatureBaseClass, PeakListMixin):
+    """parse list of ions to create spectrum"""
+    __tablename__ = "peak_list"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+
+    spectrum_type: Mapped[SpectrumType | None] = mapped_column(
+        Enum(SpectrumType, name='spectrum_type_enum'),
+        nullable=True
+    )
+
+    peaks: Mapped[list["PeakFeature"]] = relationship(
+        back_populates="peak_list",
+        cascade="all, delete-orphan"
+    )
+
+    def __init__(
+            self,
+            mzs: Optional[Iterable[float]] = None,
+            intensities: Optional[Iterable[float]] = None,
+            annotations: Optional[Iterable[float]] = None,
+            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]] = None,
+            name: Optional[str] = None
+    ) -> None:
+        self.name = name
+        self.peaks = self._build_peaks(mzs=mzs, intensities=intensities, annotations=annotations, peaks=peaks)
+
+    def merge_to_resolution(self, mz_resolution) -> None:
+        mzs_merged, intensities_merged = recursively_merge_peaks_to_resolution(self.mzs, self.intensities, resolution=mz_resolution)
+        self.peaks = [PeakFeature(mz=mz, intensity=intensity) for mz, intensity in zip(mzs_merged, intensities_merged)]
+
+    def _build_peaks(
+            self,
+            mzs: Optional[Iterable[float]],
+            intensities: Optional[Iterable[float]],
+            annotations: Optional[Iterable[str]],
+            peaks: Optional[Union[dict[float, float], Iterable[PeakFeature]]]
+    ) -> list[PeakFeature]:
+        if (mzs is None) and (intensities is None) and (peaks is None):
+            return []
+
+        if peaks is None:
+            assert (mzs is not None) and (intensities is not None), \
+                'provide either peaks OR (mzs AND intensities)'
+            assert len(mzs) == len(intensities)
+            if annotations is not None:
+                assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
+            else:
+                annotations = [None] * len(mzs)
+            # peak_list is set when the peaks are assigned to self.peaks (back_populates), setting it here as
+            # well would fire the relationship events twice per peak
+            return [PeakFeature(mz=mz, intensity=i, annotation=a) for mz, i, a in zip(mzs, intensities, annotations)]
+
+        assert (mzs is None) and (intensities is None), 'provide either peaks OR (mzs AND intensities)'
+        if isinstance(peaks, dict):
+            return [PeakFeature(mz=k, intensity=v, peak_list=self) for k, v in peaks.items()]
+        return [p
+                if p.peak_list is self
+                else PeakFeature(mz=p.mz, intensity=p.intensity, peak_list=self)
+                for p in peaks]
+
+    def __add__(self, other: Self) -> Self:
+        new_peaks = self.peaks.copy()
+        mzs = self.mzs
+        for p in other.peaks:
+            mz = p.mz
+            i = p.intensity
+            if mz not in mzs:
+                new_peaks.append(PeakFeature(mz=mz, intensity=0.))
+            idx = mzs.index(mz)
+            new_peaks[idx].intensity += i
+        return self.__class__(peaks=new_peaks)
+
+
 class LoadedPeak:
     """Peak of a spectrum loaded from a database (see LoadedPeakList), the annotation can be changed."""
     __slots__ = ('mz', 'intensity', 'annotation')
@@ -230,11 +234,11 @@ class LoadedPeak:
         self.annotation = annotation
 
 
-class LoadedPeakList:
+class LoadedPeakList(PeakListMixin):
     """
-    Spectrum loaded from a database for reading, with the interface of PeakList (peaks, mzs, intensities,
-    annotations, filter, plot) but without SQLAlchemy objects: those take about 3 kB per peak, too much for
-    measurements with millions of MS2 peaks. Convert to a PeakList to write it to a database.
+    Spectrum for reading (loaded from a database or an MGF file), with the interface of PeakList (see
+    PeakListMixin) but without SQLAlchemy objects: those take about 3 kB per peak, too much for measurements with
+    millions of MS2 peaks. Convert to a PeakList to write it to a database.
     """
     __slots__ = ('peaks', 'name')
 
@@ -255,19 +259,6 @@ class LoadedPeakList:
         annotations = list(annotations) if annotations is not None else [None] * len(mzs)
         assert len(annotations) == len(mzs), 'number of peaks and annotations must match'
         self.peaks = [LoadedPeak(mz, i, a) for mz, i, a in zip(mzs, intensities, annotations)]
-
-    mzs = PeakList.mzs
-    intensities = PeakList.intensities
-    annotations = PeakList.annotations
-    filter = PeakList.filter
-    plot = PeakList.plot
-    from_lines = classmethod(PeakList.from_lines.__func__)
-
-    def merge_with(self, other: 'LoadedPeakList', mz_resolution: int) -> 'LoadedPeakList':
-        """As PeakList.merge_with: peaks of both merged to the resolution, names and annotations are lost."""
-        mzs, intensities = recursively_merge_peaks_to_resolution(
-            self.mzs + other.mzs, self.intensities + other.intensities, resolution=mz_resolution)
-        return self.__class__(mzs=mzs, intensities=intensities)
 
     def to_peak_list(self) -> PeakList:
         return PeakList(mzs=self.mzs, intensities=self.intensities, annotations=self.annotations, name=self.name)
