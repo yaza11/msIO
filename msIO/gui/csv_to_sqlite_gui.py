@@ -28,16 +28,36 @@ MZMINE_EXPORT_PATTERNS = {
     'gnps': ['*_networking_iimn.graphml', '*_networking_fbmn.graphml', '*.graphml'],
 }
 
+# file name suffixes of a MetaboScape export (feature table: <name>.csv), the first MGF found is used: the SIRIUS MGF
+# has MS1 and MS2 spectra, the GNPS MGF only MS2
+METABOSCAPE_MGF_SUFFIXES = ['.sirius.mgf', '.gnps.mgf']
+# columns that identify the format of a feature table
+SOURCE_COLUMNS = {
+    SOURCE_METABOSCAPE: {'FEATURE_ID', 'RT', 'PEPMASS'},
+    SOURCE_MZMINE: {'id', 'rt'},
+}
+
 PAD = dict(padx=10, pady=5)
 
 
-class PathRow:
-    """Label, entry and browse button in one row of a frame."""
+def detect_source(path_feature_table: str) -> str | None:
+    """MetaboScape or MZmine from the header of a feature table, None if it is neither (or can't be read)."""
+    try:
+        with open(path_feature_table, encoding='utf-8-sig', errors='replace') as f:
+            header: set[str] = {column.strip().strip('"') for column in f.readline().strip().split(',')}
+    except OSError:
+        return None
+    return next((source for source, columns in SOURCE_COLUMNS.items() if columns <= header), None)
 
-    def __init__(self, frame: tk.Widget, row: int, label: str, browse):
+
+class PathRow:
+    """Label, entry and browse button in one row of a frame, on_set is called with every path set by browsing."""
+
+    def __init__(self, frame: tk.Widget, row: int, label: str, browse, on_set=None):
         tk.Label(frame, text=label).grid(row=row, column=0, sticky='w', **PAD)
         self.entry = tk.Entry(frame)
         self.entry.grid(row=row, column=1, sticky='ew', **PAD)
+        self.on_set = on_set
         tk.Button(frame, text='Browse...', command=lambda: self.set(browse())).grid(row=row, column=2, **PAD)
 
     def get(self) -> str:
@@ -47,6 +67,8 @@ class PathRow:
         if path:
             self.entry.delete(0, tk.END)
             self.entry.insert(0, os.path.normpath(path))
+            if self.on_set is not None:
+                self.on_set(path)
 
 
 def _section(root: tk.Tk, row: int, title: str) -> tk.LabelFrame:
@@ -61,6 +83,20 @@ def _find_first(folder: str, patterns: list[str]) -> str | None:
         matches = sorted(glob.glob(os.path.join(glob.escape(folder), pattern)))
         if matches:
             return matches[0]
+    return None
+
+
+def _find_metaboscape_export(folder: str) -> dict[str, str] | None:
+    """Feature table and MGF of a MetaboScape export: <name>.csv next to <name>.sirius.mgf (or .gnps.mgf)."""
+    for suffix in METABOSCAPE_MGF_SUFFIXES:
+        for mgf in sorted(glob.glob(os.path.join(glob.escape(folder), '*' + suffix))):
+            feature_table = mgf.removesuffix(suffix) + '.csv'
+            if os.path.isfile(feature_table) and detect_source(feature_table) == SOURCE_METABOSCAPE:
+                return dict(feature_table=feature_table, mgf=mgf)
+    # feature table without MGF (other exports of MetaboScape end with e.g. .msmsonly.csv)
+    for feature_table in sorted(glob.glob(os.path.join(glob.escape(folder), '*.csv'))):
+        if os.path.basename(feature_table).count('.') == 1 and detect_source(feature_table) == SOURCE_METABOSCAPE:
+            return dict(feature_table=feature_table)
     return None
 
 
@@ -79,9 +115,10 @@ class ConverterApp:
         source_frame.grid(row=0, column=1, sticky='w')
         for source in (SOURCE_MZMINE, SOURCE_METABOSCAPE):
             tk.Radiobutton(source_frame, text=source, value=source, variable=self.source).pack(side='left', padx=(0, 10))
-        tk.Button(frame, text='Fill from MZmine export folder...', command=self.fill_from_mzmine_folder) \
+        tk.Button(frame, text='Fill from MZmine / MetaboScape export folder...', command=self.fill_from_export_folder) \
             .grid(row=1, column=1, sticky='w', **PAD)
-        self.feature_table = PathRow(frame, 2, 'CSV file', lambda: self._ask_file('CSV', '*.csv'))
+        self.feature_table = PathRow(frame, 2, 'CSV file', lambda: self._ask_file('CSV', '*.csv'),
+                                     on_set=self._set_source_from_file)
         self.intensity = tk.StringVar(value='area')
         intensity_frame = tk.Frame(frame)
         intensity_frame.grid(row=3, column=1, sticky='w')
@@ -136,23 +173,44 @@ class ConverterApp:
     def _toggle_mz_resolution(self) -> None:
         self.mz_resolution.config(state='normal' if self.accumulate.get() else 'disabled')
 
-    def fill_from_mzmine_folder(self) -> None:
-        folder = filedialog.askdirectory(title='Select MZmine export folder')
-        if not folder:
+    def _set_source_from_file(self, path: str) -> None:
+        """Select MetaboScape / MZmine according to the columns of the chosen feature table."""
+        if (source := detect_source(path)) is not None:
+            self.source.set(source)
+
+    def fill_from_export_folder(self) -> None:
+        folder = filedialog.askdirectory(title='Select MZmine or MetaboScape export folder')
+        if folder:
+            self.fill_from_folder(folder)
+
+    def fill_from_folder(self, folder: str) -> None:
+        """Fill the paths from an MZmine export or a MetaboScape export (<name>.csv and <name>.sirius.mgf)."""
+        if _find_first(folder, MZMINE_EXPORT_PATTERNS['feature_table']) is not None:
+            found = {key: _find_first(folder, patterns) for key, patterns in MZMINE_EXPORT_PATTERNS.items()}
+            output = found['feature_table'].removesuffix('_full_feature_table.csv') + '.sqlite'
+        elif (found := _find_metaboscape_export(folder)) is not None:
+            output = found['feature_table'].removesuffix('.csv') + '.sqlite'
+        else:
+            messagebox.showwarning(
+                'Not found', f'No MZmine export (*_full_feature_table.csv) or MetaboScape export (<name>.csv with '
+                             f'{" or ".join(METABOSCAPE_MGF_SUFFIXES)}) found in\n{folder}')
             return
-        self.source.set(SOURCE_MZMINE)
-        found = {key: _find_first(folder, patterns) for key, patterns in MZMINE_EXPORT_PATTERNS.items()}
-        if found['feature_table'] is None:
-            messagebox.showwarning('Not found', f'No *_full_feature_table.csv found in\n{folder}')
-        self.feature_table.set(found['feature_table'])
-        self.mgf.set(found['mgf'])
-        self.gnps.set(found['gnps'])
-        if not self.sqlite.get() and found['feature_table']:
-            self.sqlite.set(found['feature_table'].removesuffix('_full_feature_table.csv') + '.sqlite')
+        for row, key in ((self.feature_table, 'feature_table'), (self.mgf, 'mgf'), (self.gnps, 'gnps')):
+            row.entry.delete(0, tk.END)
+            row.set(found.get(key))
+        if not self.sqlite.get():
+            self.sqlite.set(output)
 
     # --- conversion -----------------------------------------------------------------------
     def _collect_settings(self) -> dict:
         """Validate the inputs, raise ValueError with a user-readable message if something is wrong."""
+        # the format follows the columns of the feature table (e.g. a path typed in or pasted)
+        if os.path.isfile(path := self.feature_table.get()):
+            if (source := detect_source(path)) is None:
+                raise ValueError(
+                    f'{path}\nis neither a MetaboScape feature table (columns {", ".join(sorted(SOURCE_COLUMNS[SOURCE_METABOSCAPE]))}) '
+                    f'nor an MZmine full feature table (columns {", ".join(sorted(SOURCE_COLUMNS[SOURCE_MZMINE]))}).')
+            self.source.set(source)
         settings = dict(
             source=self.source.get(),
             feature_table=self.feature_table.get(),
