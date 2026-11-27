@@ -1,0 +1,5 @@
+#!/bin/bash
+set -euo pipefail
+
+# install msIO and its dependencies from setup.py
+pip install "${REPO_DIR:-.}"

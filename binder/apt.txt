@@ -1,0 +1,11 @@
+# Baseline packages to get X working
+dbus-x11
+xorg
+xubuntu-icon-theme
+
+# Desktop environment so people can navigate
+xfce4
+
+# VNC server for jupyter-remote-desktop-proxy
+tigervnc-standalone-server
+tigervnc-xorg-extension
